@@ -95,6 +95,7 @@ def index_file(
     """
     path_str = str(file_path.resolve())
     h = current_hash or compute_file_hash(file_path)
+    mtime = file_path.stat().st_mtime
 
     text = file_path.read_text(encoding="utf-8", errors="replace")
     chunks = chunk_text(text, chunk_size=chunk_size, overlap=overlap)
@@ -107,10 +108,10 @@ def index_file(
             # 空ファイルの場合もファイルメタデータだけ記録
             conn.execute(
                 """
-                INSERT INTO files (path, hash, chunk_count)
-                VALUES (?, ?, ?);
+                INSERT INTO files (path, hash, chunk_count, mtime)
+                VALUES (?, ?, ?, ?);
                 """,
-                (path_str, h, 0),
+                (path_str, h, 0, mtime),
             )
             return 0
 
@@ -118,10 +119,10 @@ def index_file(
         cursor = conn.cursor()
         cursor.execute(
             """
-            INSERT INTO files (path, hash, chunk_count)
-            VALUES (?, ?, ?);
+            INSERT INTO files (path, hash, chunk_count, mtime)
+            VALUES (?, ?, ?, ?);
             """,
-            (path_str, h, len(chunks)),
+            (path_str, h, len(chunks), mtime),
         )
         file_id = cursor.lastrowid
         assert file_id is not None

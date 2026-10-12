@@ -15,6 +15,7 @@ import sqlite_vec
 from hysearch.core.config import DEFAULT_EMBED_DIM
 
 PathLike = str | Path
+SCHEMA_VERSION: int = 1
 
 # データベース初期化用 SQL スクリプト
 INIT_SCHEMA_SQL = """
@@ -23,6 +24,7 @@ CREATE TABLE IF NOT EXISTS files (
     path TEXT NOT NULL UNIQUE,
     hash TEXT NOT NULL,
     chunk_count INTEGER NOT NULL,
+    mtime REAL NOT NULL DEFAULT 0.0,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -101,6 +103,21 @@ def get_connection(
         conn.close()
 
 
+def get_schema_version(conn: sqlite3.Connection) -> int:
+    """Retrieve the current database schema version.
+
+    Args:
+        conn: Open SQLite connection.
+
+    Returns:
+        int: Current user_version PRAGMA value.
+    """
+    cursor = conn.cursor()
+    cursor.execute("PRAGMA user_version;")
+    row = cursor.fetchone()
+    return int(row[0]) if row else 0
+
+
 def init_db(
     conn: sqlite3.Connection, embed_dim: int = DEFAULT_EMBED_DIM
 ) -> None:
@@ -128,3 +145,16 @@ def init_db(
             END;
             """
         )
+
+        # 既存 DB (v0) からのマイグレーション:
+        # mtime カラムが存在しない場合に追加
+        cursor = conn.cursor()
+        cursor.execute("PRAGMA table_info(files);")
+        columns = {row[1] for row in cursor.fetchall()}
+        if "mtime" not in columns:
+            conn.execute(
+                "ALTER TABLE files ADD COLUMN mtime REAL NOT NULL DEFAULT 0.0;"
+            )
+
+        # スキーマバージョンを記録
+        conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION};")

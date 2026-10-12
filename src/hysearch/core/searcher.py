@@ -8,6 +8,9 @@ Fusion (RRF).
 import sqlite3
 import time
 from collections import defaultdict
+from datetime import datetime
+from fnmatch import fnmatch
+from pathlib import Path
 from typing import Literal
 
 import sqlite_vec
@@ -22,6 +25,89 @@ from hysearch.core.models import SearchHit, SearchResponse
 from hysearch.utils.text import extract_snippet
 
 SearchMode = Literal["hybrid", "bm25", "vector"]
+
+
+def _match_path(file_path_str: str, path_filter: str) -> bool:
+    """Check if a file path matches the path filter prefix or folder."""
+    target = Path(path_filter).resolve()
+    file_p = Path(file_path_str)
+    try:
+        file_p.relative_to(target)
+        return True
+    except ValueError:
+        pass
+    norm_file = file_path_str.replace("\\", "/")
+    norm_filter = path_filter.replace("\\", "/").rstrip("/")
+    return norm_filter in norm_file
+
+
+def _match_glob(file_path_str: str, glob_pattern: str) -> bool:
+    """Check if a file path matches the given glob pattern."""
+    p = Path(file_path_str)
+    norm_file = file_path_str.replace("\\", "/")
+    norm_glob = glob_pattern.replace("\\", "/")
+    return (
+        fnmatch(norm_file, norm_glob)
+        or fnmatch(p.name, norm_glob)
+        or fnmatch(str(p), glob_pattern)
+    )
+
+
+def get_filtered_chunk_ids(
+    conn: sqlite3.Connection,
+    path_filter: str | None = None,
+    glob_filter: str | None = None,
+    since: datetime | None = None,
+    until: datetime | None = None,
+) -> list[int] | None:
+    """Retrieve chunk IDs matching path, glob, and modification filters.
+
+    Args:
+        conn: Open SQLite connection.
+        path_filter: Optional directory or path substring.
+        glob_filter: Optional file glob pattern.
+        since: Optional minimum modification datetime.
+        until: Optional maximum modification datetime.
+
+    Returns:
+        list[int] | None: Allowed chunk IDs, or None if no filter applied.
+    """
+    if (
+        path_filter is None
+        and glob_filter is None
+        and since is None
+        and until is None
+    ):
+        return None
+
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, path, mtime FROM files;")
+    rows = cursor.fetchall()
+
+    since_ts = since.timestamp() if since is not None else None
+    until_ts = until.timestamp() if until is not None else None
+    matching_file_ids: list[int] = []
+
+    for fid, fpath, fmtime in rows:
+        if since_ts is not None and fmtime < since_ts:
+            continue
+        if until_ts is not None and fmtime > until_ts:
+            continue
+        if path_filter is not None and not _match_path(fpath, path_filter):
+            continue
+        if glob_filter is not None and not _match_glob(fpath, glob_filter):
+            continue
+        matching_file_ids.append(fid)
+
+    if not matching_file_ids:
+        return []
+
+    placeholders = ",".join("?" for _ in matching_file_ids)
+    cursor.execute(
+        f"SELECT id FROM chunks WHERE file_id IN ({placeholders});",
+        matching_file_ids,
+    )
+    return [row[0] for row in cursor.fetchall()]
 
 
 def _clean_fts_query(query: str) -> str | None:
@@ -52,6 +138,7 @@ def search_bm25(
     conn: sqlite3.Connection,
     query: str,
     limit: int = 50,
+    target_ids: list[int] | None = None,
 ) -> list[int]:
     """Execute BM25 keyword search using SQLite FTS5 trigram virtual table.
 
@@ -59,26 +146,43 @@ def search_bm25(
         conn: Open SQLite connection.
         query: Raw search query text.
         limit: Maximum number of ranked results to return.
+        target_ids: Optional list of chunk IDs to restrict the search.
 
     Returns:
         list[int]: Ordered list of chunk rowids from top to bottom rank.
     """
+    if target_ids is not None and not target_ids:
+        return []
+
     fts_query = _clean_fts_query(query)
     if not fts_query:
         return []
 
     cursor = conn.cursor()
     try:
-        cursor.execute(
-            """
-            SELECT rowid
-            FROM fts_chunks
-            WHERE fts_chunks MATCH ?
-            ORDER BY rank
-            LIMIT ?;
-            """,
-            (fts_query, limit),
-        )
+        if target_ids is not None:
+            placeholders = ",".join("?" for _ in target_ids)
+            cursor.execute(
+                f"""
+                SELECT rowid
+                FROM fts_chunks
+                WHERE fts_chunks MATCH ? AND rowid IN ({placeholders})
+                ORDER BY rank
+                LIMIT ?;
+                """,
+                [fts_query, *target_ids, limit],
+            )
+        else:
+            cursor.execute(
+                """
+                SELECT rowid
+                FROM fts_chunks
+                WHERE fts_chunks MATCH ?
+                ORDER BY rank
+                LIMIT ?;
+                """,
+                (fts_query, limit),
+            )
         return [row[0] for row in cursor.fetchall()]
     except sqlite3.OperationalError:
         # 構文エラー等の場合は空リストを返しベクトル検索に委ねる
@@ -90,6 +194,7 @@ def search_vector(
     query: str,
     embedder: EmbedderProtocol,
     limit: int = 50,
+    target_ids: list[int] | None = None,
 ) -> list[int]:
     """Execute vector approximate nearest neighbors search using sqlite-vec.
 
@@ -98,29 +203,49 @@ def search_vector(
         query: Search query text.
         embedder: Vector embedding instance.
         limit: Maximum number of nearest results to return.
+        target_ids: Optional list of chunk IDs to restrict the search.
 
     Returns:
         list[int]: Ordered list of chunk IDs sorted by increasing distance.
     """
+    if target_ids is not None and not target_ids:
+        return []
+
     # 登録データが存在するか確認
     count = conn.execute("SELECT COUNT(*) FROM vec_chunks;").fetchone()[0]
     if count == 0:
         return []
 
-    k_val = min(limit, count)
+    max_available = len(target_ids) if target_ids is not None else count
+    k_val = min(limit, max_available)
+    if k_val <= 0:
+        return []
+
     query_vector = embedder.embed_query(query)
     serialized = sqlite_vec.serialize_float32(query_vector)
 
     cursor = conn.cursor()
-    cursor.execute(
-        """
-        SELECT id
-        FROM vec_chunks
-        WHERE embedding MATCH ? AND k = ?
-        ORDER BY distance;
-        """,
-        (serialized, k_val),
-    )
+    if target_ids is not None:
+        placeholders = ",".join("?" for _ in target_ids)
+        cursor.execute(
+            f"""
+            SELECT id
+            FROM vec_chunks
+            WHERE embedding MATCH ? AND k = ? AND id IN ({placeholders})
+            ORDER BY distance;
+            """,
+            [serialized, k_val, *target_ids],
+        )
+    else:
+        cursor.execute(
+            """
+            SELECT id
+            FROM vec_chunks
+            WHERE embedding MATCH ? AND k = ?
+            ORDER BY distance;
+            """,
+            (serialized, k_val),
+        )
     return [row[0] for row in cursor.fetchall()]
 
 
@@ -176,6 +301,10 @@ def search(
     rrf_k: int = DEFAULT_RRF_K,
     weight_bm25: float = DEFAULT_WEIGHT_BM25,
     weight_vec: float = DEFAULT_WEIGHT_VEC,
+    path_filter: str | None = None,
+    glob_filter: str | None = None,
+    since: datetime | None = None,
+    until: datetime | None = None,
 ) -> SearchResponse:
     """Perform hybrid, BM25, or vector search on the database.
 
@@ -188,11 +317,31 @@ def search(
         rrf_k: Smoothing parameter for RRF formula.
         weight_bm25: BM25 score weight.
         weight_vec: Vector score weight.
+        path_filter: Optional directory or path substring.
+        glob_filter: Optional file glob pattern.
+        since: Optional minimum modification datetime.
+        until: Optional maximum modification datetime.
 
     Returns:
         SearchResponse: Structured search response containing ranked hits.
     """
     start_time = time.perf_counter()
+    target_ids = get_filtered_chunk_ids(
+        conn,
+        path_filter=path_filter,
+        glob_filter=glob_filter,
+        since=since,
+        until=until,
+    )
+    if target_ids is not None and not target_ids:
+        elapsed = (time.perf_counter() - start_time) * 1000.0
+        return SearchResponse(
+            query=query,
+            total_hits=0,
+            hits=[],
+            execution_time_ms=round(elapsed, 2),
+        )
+
     active_embedder: EmbedderProtocol = (
         embedder if embedder is not None else FastEmbedder()
     )
@@ -202,11 +351,17 @@ def search(
     vec_ids: list[int] = []
 
     if mode in ("hybrid", "bm25"):
-        bm25_ids = search_bm25(conn, query, limit=candidate_limit)
+        bm25_ids = search_bm25(
+            conn, query, limit=candidate_limit, target_ids=target_ids
+        )
 
     if mode in ("hybrid", "vector"):
         vec_ids = search_vector(
-            conn, query, embedder=active_embedder, limit=candidate_limit
+            conn,
+            query,
+            embedder=active_embedder,
+            limit=candidate_limit,
+            target_ids=target_ids,
         )
 
     rrf_map = compute_rrf_scores(

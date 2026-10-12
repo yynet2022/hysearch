@@ -104,6 +104,42 @@ def index_cmd(
     print_indexing_stats(stats)
 
 
+def parse_datetime_filter(val: str, param_name: str) -> datetime:
+    """Parse a date or datetime string into a datetime object.
+
+    Args:
+        val: Input date string.
+        param_name: Parameter name for error reporting.
+
+    Returns:
+        datetime: Parsed datetime instance.
+    """
+    clean_val = val.strip()
+    try:
+        return datetime.fromisoformat(clean_val)
+    except ValueError:
+        pass
+
+    for fmt in (
+        "%Y/%m/%d",
+        "%Y/%m/%d %H:%M:%S",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y/%m",
+        "%Y-%m",
+        "%Y",
+    ):
+        try:
+            return datetime.strptime(clean_val, fmt)
+        except ValueError:
+            pass
+
+    console.print(
+        f"[red]Error:[/] Invalid date format for {param_name}: '{val}'. "
+        "Use YYYY-MM-DD or ISO 8601 format."
+    )
+    raise typer.Exit(code=1)
+
+
 @app.command(name="query")
 def query_cmd(
     query_str: Annotated[
@@ -129,6 +165,50 @@ def query_cmd(
         int,
         typer.Option("--rrf-k", help="RRF smoothing constant"),
     ] = DEFAULT_RRF_K,
+    path: Annotated[
+        str | None,
+        typer.Option(
+            "--path",
+            "-p",
+            help="Filter by directory path or prefix",
+        ),
+    ] = None,
+    glob: Annotated[
+        str | None,
+        typer.Option(
+            "--glob",
+            "-g",
+            help="Filter by file glob pattern",
+        ),
+    ] = None,
+    since: Annotated[
+        str | None,
+        typer.Option(
+            "--since",
+            help="Filter files modified since date/time",
+        ),
+    ] = None,
+    after: Annotated[
+        str | None,
+        typer.Option(
+            "--after",
+            help="Alias for --since",
+        ),
+    ] = None,
+    until: Annotated[
+        str | None,
+        typer.Option(
+            "--until",
+            help="Filter files modified until date/time",
+        ),
+    ] = None,
+    before: Annotated[
+        str | None,
+        typer.Option(
+            "--before",
+            help="Alias for --until",
+        ),
+    ] = None,
     output_json: Annotated[
         bool,
         typer.Option("--json", help="Output results in JSON format"),
@@ -146,6 +226,34 @@ def query_cmd(
         )
         raise typer.Exit(code=1)
 
+    if since and after and since != after:
+        console.print(
+            "[red]Error:[/] Conflicting values provided for "
+            "--since and --after."
+        )
+        raise typer.Exit(code=1)
+
+    if until and before and until != before:
+        console.print(
+            "[red]Error:[/] Conflicting values provided for "
+            "--until and --before."
+        )
+        raise typer.Exit(code=1)
+
+    effective_since = since or after
+    effective_until = until or before
+
+    since_dt = (
+        parse_datetime_filter(effective_since, "--since")
+        if effective_since
+        else None
+    )
+    until_dt = (
+        parse_datetime_filter(effective_until, "--until")
+        if effective_until
+        else None
+    )
+
     if not db.exists():
         console.print(
             f"[red]Error:[/] Database file '{db}' does not exist. "
@@ -162,6 +270,10 @@ def query_cmd(
             mode=search_mode,
             top_k=top,
             rrf_k=rrf_k,
+            path_filter=path,
+            glob_filter=glob,
+            since=since_dt,
+            until=until_dt,
         )
 
     if output_json:

@@ -167,3 +167,138 @@ def test_cli_reset_prompt_confirm_with_wal(tmp_path: Path) -> None:
     assert not db_file.exists()
     assert not wal_file.exists()
     assert not shm_file.exists()
+
+
+def test_cli_query_with_filters(tmp_path: Path) -> None:
+    """Verify query command with path, glob, since, after, until, before."""
+    docs_dir = tmp_path / "docs"
+    docs_dir.mkdir()
+    file_md = docs_dir / "guide.md"
+    file_md.write_text("Markdown user guide.", encoding="utf-8")
+    file_txt = docs_dir / "log.txt"
+    file_txt.write_text("Text log information.", encoding="utf-8")
+
+    db_file = tmp_path / "filter_cli.db"
+    runner.invoke(app, ["index", str(docs_dir), "--db", str(db_file)])
+
+    # --path / -p
+    res_path = runner.invoke(
+        app,
+        ["query", "guide", "-p", "guide.md", "--db", str(db_file)],
+    )
+    assert res_path.exit_code == 0
+    assert "1 hits" in res_path.stdout
+
+    # --glob / -g
+    res_glob = runner.invoke(
+        app,
+        ["query", "user", "-g", "*.md", "--db", str(db_file)],
+    )
+    assert res_glob.exit_code == 0
+    assert "1 hits" in res_glob.stdout
+
+    # --since / --after (両ファイルとも対象)
+    res_since = runner.invoke(
+        app,
+        ["query", "guide", "--since", "2000-01-01", "--db", str(db_file)],
+    )
+    assert res_since.exit_code == 0
+    assert "2 hits" in res_since.stdout
+
+    res_after = runner.invoke(
+        app,
+        ["query", "guide", "--after", "2000/01/01", "--db", str(db_file)],
+    )
+    assert res_after.exit_code == 0
+    assert "2 hits" in res_after.stdout
+
+    # --until / --before (両ファイルとも対象)
+    res_until = runner.invoke(
+        app,
+        ["query", "guide", "--until", "2099-12-31", "--db", str(db_file)],
+    )
+    assert res_until.exit_code == 0
+    assert "2 hits" in res_until.stdout
+
+    res_before = runner.invoke(
+        app,
+        ["query", "guide", "--before", "2099/12", "--db", str(db_file)],
+    )
+    assert res_before.exit_code == 0
+    assert "2 hits" in res_before.stdout
+
+    # 日時範囲外フィルタで 0 件になることを確認
+    res_zero = runner.invoke(
+        app,
+        ["query", "guide", "--since", "2099-01-01", "--db", str(db_file)],
+    )
+    assert res_zero.exit_code == 0
+    assert "No results found" in res_zero.stdout
+
+    # --json でファイルパスが完全にマッチすることを確認
+    res_json_filter = runner.invoke(
+        app,
+        ["query", "guide", "-g", "*.md", "--json", "--db", str(db_file)],
+    )
+    assert res_json_filter.exit_code == 0
+    data = json.loads(res_json_filter.stdout)
+    assert data["total_hits"] == 1
+    assert "guide.md" in data["hits"][0]["file_path"]
+
+
+def test_cli_query_filter_conflicts_and_errors(tmp_path: Path) -> None:
+    """Verify conflicting and invalid date filters produce exit code 1."""
+    docs_dir = tmp_path / "docs"
+    docs_dir.mkdir()
+    (docs_dir / "doc.txt").write_text("Sample", encoding="utf-8")
+    db_file = tmp_path / "error_cli.db"
+    runner.invoke(app, ["index", str(docs_dir), "--db", str(db_file)])
+
+    # 競合: since と after
+    res_since_conflict = runner.invoke(
+        app,
+        [
+            "query",
+            "Sample",
+            "--since",
+            "2026-01-01",
+            "--after",
+            "2026-02-01",
+            "--db",
+            str(db_file),
+        ],
+    )
+    assert res_since_conflict.exit_code == 1
+    assert "Conflicting values" in res_since_conflict.stdout
+
+    # 競合: until と before
+    res_until_conflict = runner.invoke(
+        app,
+        [
+            "query",
+            "Sample",
+            "--until",
+            "2026-01-01",
+            "--before",
+            "2026-02-01",
+            "--db",
+            str(db_file),
+        ],
+    )
+    assert res_until_conflict.exit_code == 1
+    assert "Conflicting values" in res_until_conflict.stdout
+
+    # 不正な日付形式
+    res_invalid_date = runner.invoke(
+        app,
+        [
+            "query",
+            "Sample",
+            "--since",
+            "invalid-date-string",
+            "--db",
+            str(db_file),
+        ],
+    )
+    assert res_invalid_date.exit_code == 1
+    assert "Invalid date format" in res_invalid_date.stdout

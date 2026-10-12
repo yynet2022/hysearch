@@ -6,7 +6,13 @@ from pathlib import Path
 import sqlite_vec
 
 from hysearch.core.config import DEFAULT_EMBED_DIM
-from hysearch.core.database import get_connection, init_db
+from hysearch.core.database import (
+    SCHEMA_VERSION,
+    create_connection,
+    get_connection,
+    get_schema_version,
+    init_db,
+)
 
 
 def test_init_db_creates_tables_and_triggers(
@@ -150,3 +156,34 @@ def test_get_connection_context_manager(tmp_path: Path) -> None:
     with get_connection(db_file) as conn:
         init_db(conn)
         assert conn.execute("SELECT 1;").fetchone()[0] == 1
+
+
+def test_schema_version_and_migration() -> None:
+    """Verify schema version retrieval and migration from v0."""
+    conn = create_connection(":memory:")
+    # まだバージョン設定されていない初期状態
+    assert get_schema_version(conn) == 0
+
+    # v0 相当のテーブルを作成 (mtime なし)
+    conn.execute(
+        """
+        CREATE TABLE files (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            path TEXT NOT NULL UNIQUE,
+            hash TEXT NOT NULL,
+            chunk_count INTEGER NOT NULL,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        """
+    )
+    # マイグレーション実行
+    init_db(conn)
+
+    assert get_schema_version(conn) == SCHEMA_VERSION
+
+    # mtime カラムが存在することを確認
+    cursor = conn.cursor()
+    cursor.execute("PRAGMA table_info(files);")
+    columns = {row[1] for row in cursor.fetchall()}
+    assert "mtime" in columns
+    conn.close()
