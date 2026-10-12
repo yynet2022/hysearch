@@ -167,6 +167,7 @@ def index_directory(
     chunk_size: int = DEFAULT_CHUNK_SIZE,
     overlap: int = DEFAULT_CHUNK_OVERLAP,
     force: bool = False,
+    extensions: Sequence[str] | None = None,
     on_progress: ProgressCallback | None = None,
 ) -> IndexingStats:
     """Scan and index all matching documents within the target directory.
@@ -178,6 +179,7 @@ def index_directory(
         chunk_size: Target characters per chunk.
         overlap: Overlap characters between chunks.
         force: If True, re-index all files ignoring hash equality.
+        extensions: Optional file extensions sequence to filter targets.
         on_progress: Optional callback receiving (current_index, total_count,
             current_file_path).
 
@@ -189,7 +191,8 @@ def index_directory(
         embedder if embedder is not None else FastEmbedder()
     )
 
-    files = scan_directory(target_dir)
+    scan_exts = extensions if extensions is not None else SUPPORTED_EXTENSIONS
+    files = scan_directory(target_dir, extensions=scan_exts)
     stored_hashes = get_stored_file_hashes(conn)
 
     total_files = len(files)

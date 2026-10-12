@@ -302,3 +302,48 @@ def test_cli_query_filter_conflicts_and_errors(tmp_path: Path) -> None:
     )
     assert res_invalid_date.exit_code == 1
     assert "Invalid date format" in res_invalid_date.stdout
+
+
+def test_cli_index_with_ext_option(tmp_path: Path) -> None:
+    """Verify index command with --ext option restricts crawled files."""
+    docs_dir = tmp_path / "mixed_files"
+    docs_dir.mkdir()
+    (docs_dir / "doc.md").write_text("Markdown doc content", encoding="utf-8")
+    (docs_dir / "calc.py").write_text("print(1 + 2)", encoding="utf-8")
+    (docs_dir / "index.ts").write_text("const a = 1;", encoding="utf-8")
+
+    db_file = tmp_path / "ext_test.db"
+
+    # 1. --ext .py で Python ファイルのみインデックス
+    res_py = runner.invoke(
+        app,
+        ["index", str(docs_dir), "--ext", ".py", "--db", str(db_file)],
+    )
+    assert res_py.exit_code == 0
+    assert "Files Indexed: 1" in res_py.stdout
+
+    # 2. -e ts,md （カンマ区切りおよびドット省略）でインデックス
+    res_multi = runner.invoke(
+        app,
+        ["index", str(docs_dir), "-e", "*.ts,md", "--db", str(db_file)],
+    )
+    assert res_multi.exit_code == 0
+    assert "Files Indexed: 2" in res_multi.stdout
+
+    # 3. status で全3件（.py, .ts, .md）が登録されていることを確認
+    res_status = runner.invoke(
+        app,
+        ["status", "--json", "--db", str(db_file)],
+    )
+    assert res_status.exit_code == 0
+    status_data = json.loads(res_status.stdout)
+    assert status_data["Files Indexed"] == 3
+
+
+def test_parse_extension_filters_empty() -> None:
+    """Verify parse_extension_filters returns None on empty or whitespace."""
+    from hysearch.cli.main import parse_extension_filters
+
+    assert parse_extension_filters(None) is None
+    assert parse_extension_filters([]) is None
+    assert parse_extension_filters(["", "  "]) is None

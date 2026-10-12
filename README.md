@@ -46,14 +46,19 @@ pip install -e ".[dev]"
 ## 使い方 (CLI コマンド)
 
 ### 1. ドキュメントのインデックス作成・更新 (`index`)
-指定ディレクトリ配下の `.md`, `.markdown`, `.txt` ファイルを再帰的に走査し、インデックスを作成します。SHA-256 ハッシュによる差分検知を行い、変更のあったファイルのみ更新します。
+指定ディレクトリ配下のドキュメントおよびソースコード（デフォルト: `.md`, `.markdown`, `.txt`, `.py`, `.js`, `.ts`）を再帰的に走査し、インデックスを作成します。SHA-256 ハッシュによる差分検知を行い、変更のあったファイルのみ更新します。
 
 ```bash
-# カレントディレクトリ配下をインデックス化
+# カレントディレクトリ配下をインデックス化 (デフォルト拡張子すべて)
 hysearch index .
 
 # チャンクサイズとオーバーラップを指定してインデックス化
 hysearch index ./docs --chunk-size 400 --overlap 80
+
+# 特定の拡張子だけを対象にして追加・更新 (--ext / -e, 既存の別拡張子はDB内にそのまま保持)
+hysearch index ./src --ext .py
+hysearch index ./src -e .py -e .ts
+hysearch index ./src --ext "py,js,ts"
 
 # 差分キャッシュを無視して強制的に全再構築
 hysearch index ./docs --force

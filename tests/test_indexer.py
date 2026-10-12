@@ -18,20 +18,22 @@ def test_scan_directory_filters_and_recursion(tmp_path: Path) -> None:
     """Verify scan_directory only collects supported file extensions."""
     (tmp_path / "doc1.md").write_text("Markdown 1", encoding="utf-8")
     (tmp_path / "notes.txt").write_text("Text note", encoding="utf-8")
+    (tmp_path / "code.py").write_text("print()", encoding="utf-8")
     (tmp_path / "image.png").write_bytes(b"\x89PNG")
 
     sub_dir = tmp_path / "sub"
     sub_dir.mkdir()
     (sub_dir / "guide.markdown").write_text("Sub guide", encoding="utf-8")
-    (sub_dir / "ignored.py").write_text("print()", encoding="utf-8")
+    (sub_dir / "ignored.bin").write_bytes(b"\x00\x01")
 
     files = scan_directory(tmp_path)
     names = [f.name for f in files]
     assert "doc1.md" in names
     assert "notes.txt" in names
+    assert "code.py" in names
     assert "guide.markdown" in names
     assert "image.png" not in names
-    assert "ignored.py" not in names
+    assert "ignored.bin" not in names
 
 
 def test_index_directory_incremental_and_force(
@@ -173,3 +175,41 @@ def test_index_file_empty(
 
     hashes = get_stored_file_hashes(memory_db)
     assert str(empty_file.resolve()) in hashes
+
+
+def test_index_directory_with_extensions_filter(
+    memory_db: sqlite3.Connection,
+    tmp_path: Path,
+    dummy_embedder: DummyEmbedder,
+) -> None:
+    """Verify index_directory with custom extensions filters files."""
+    (tmp_path / "doc.md").write_text("Markdown doc", encoding="utf-8")
+    (tmp_path / "script.py").write_text("print('hello')", encoding="utf-8")
+    (tmp_path / "style.css").write_text("body {}", encoding="utf-8")
+
+    # 1. .py のみインデックス
+    stats_py = index_directory(
+        conn=memory_db,
+        target_dir=tmp_path,
+        embedder=dummy_embedder,
+        extensions=[".py"],
+    )
+    assert stats_py.files_scanned == 1
+    assert stats_py.files_indexed == 1
+    hashes = get_stored_file_hashes(memory_db)
+    assert len(hashes) == 1
+    assert str((tmp_path / "script.py").resolve()) in hashes
+
+    # 2. 続いて .md をインデックス（既存の .py はそのまま残る）
+    stats_md = index_directory(
+        conn=memory_db,
+        target_dir=tmp_path,
+        embedder=dummy_embedder,
+        extensions=[".md"],
+    )
+    assert stats_md.files_scanned == 1
+    assert stats_md.files_indexed == 1
+    hashes_after = get_stored_file_hashes(memory_db)
+    assert len(hashes_after) == 2
+    assert str((tmp_path / "script.py").resolve()) in hashes_after
+    assert str((tmp_path / "doc.md").resolve()) in hashes_after

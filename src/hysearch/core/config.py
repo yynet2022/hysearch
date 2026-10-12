@@ -26,5 +26,12 @@ DEFAULT_RRF_K: int = 60
 DEFAULT_WEIGHT_BM25: float = 1.0
 DEFAULT_WEIGHT_VEC: float = 1.0
 
-# 対象とするファイル拡張子
-SUPPORTED_EXTENSIONS: tuple[str, ...] = (".md", ".markdown", ".txt")
+# 対象とするファイル拡張子 (デフォルト)
+SUPPORTED_EXTENSIONS: tuple[str, ...] = (
+    ".md",
+    ".markdown",
+    ".txt",
+    ".py",
+    ".js",
+    ".ts",
+)

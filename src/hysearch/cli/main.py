@@ -42,6 +42,38 @@ app = typer.Typer(
 )
 
 
+def parse_extension_filters(
+    ext_inputs: list[str] | None,
+) -> list[str] | None:
+    """Normalize file extensions into lowercase dotted format.
+
+    Args:
+        ext_inputs: Raw list of extension options provided via CLI.
+
+    Returns:
+        list[str] | None: Normalized list of extensions (e.g. ['.py']),
+            or None if no filter provided.
+    """
+    if not ext_inputs:
+        return None
+
+    normalized: list[str] = []
+    for item in ext_inputs:
+        for part in item.split(","):
+            clean = part.strip()
+            if not clean:
+                continue
+            if clean.startswith("*"):
+                clean = clean.lstrip("*")
+            if not clean.startswith("."):
+                clean = f".{clean}"
+            clean = clean.lower()
+            if clean not in normalized:
+                normalized.append(clean)
+
+    return normalized if normalized else None
+
+
 @app.command(name="index")
 def index_cmd(
     dir_path: Annotated[
@@ -66,6 +98,14 @@ def index_cmd(
         bool,
         typer.Option("--force", "-f", help="Force re-indexing all documents"),
     ] = False,
+    ext: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--ext",
+            "-e",
+            help="File extension(s) to index (e.g. .py; overrides defaults)",
+        ),
+    ] = None,
     db: Annotated[
         Path,
         typer.Option("--db", help="Path to the SQLite database file"),
@@ -91,6 +131,7 @@ def index_cmd(
                 description=f"[{current}/{total}] {file_path.name}",
             )
 
+        parsed_exts = parse_extension_filters(ext)
         with get_connection(db) as conn:
             init_db(conn)
             stats = index_directory(
@@ -99,6 +140,7 @@ def index_cmd(
                 chunk_size=chunk_size,
                 overlap=overlap,
                 force=force,
+                extensions=parsed_exts,
                 on_progress=on_progress,
             )
     print_indexing_stats(stats)

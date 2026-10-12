@@ -363,11 +363,12 @@ Typerを使用して実装。全コマンドで `--db` オプション（デフ�
 ### 7.1 コマンド一覧
 
 #### 1. `hysearch index [DIR_PATH]`
-指定ディレクトリ配下の `.md`, `.markdown`, `.txt` ファイルを再帰的に走査してインデックスを作成・更新。
+指定ディレクトリ配下のドキュメントおよびソースコード（デフォルト: `.md`, `.markdown`, `.txt`, `.py`, `.js`, `.ts`）を再帰的に走査してインデックスを作成・更新。
 * オプション:
   * `--chunk-size` (int, default: 500)
   * `--overlap` (int, default: 100)
   * `--force` (bool, default: False) - ハッシュ差分を無視して全再構築
+  * `--ext` / `-e` (list[str] | None, default: None) - インデックス対象の拡張子（指定した場合デフォルトを上書き。既存の他拡張子データはDBに保持）
 
 #### 2. `hysearch query [QUERY]`
 自然言語またはキーワードでハイブリッド検索を実行。
