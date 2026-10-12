@@ -5,12 +5,13 @@ from pathlib import Path
 import pytest
 
 from hysearch.core.chunker import (
+    _find_split_point,
     chunk_text,
     compute_file_hash,
     compute_text_hash,
 )
 from hysearch.core.config import DEFAULT_EMBED_DIM
-from hysearch.core.embedder import DummyEmbedder
+from hysearch.core.embedder import DummyEmbedder, FastEmbedder
 
 
 def test_compute_text_and_file_hash(tmp_path: Path) -> None:
@@ -100,3 +101,85 @@ def test_dummy_embedder_determinism_and_dimensions() -> None:
     # embed_query の動作確認
     query_vec = embedder.embed_query("apple")
     assert query_vec == vectors[0]
+
+
+def test_dummy_embedder_fixed_value() -> None:
+    """Verify DummyEmbedder with fixed_value fills constant vectors."""
+    embedder = DummyEmbedder(dimension=4, fixed_value=0.5)
+    vec = embedder.embed_query("sample")
+    assert vec == [0.5, 0.5, 0.5, 0.5]
+
+
+def test_fastembedder_empty_list() -> None:
+    """Verify FastEmbedder returns empty list when given no texts."""
+    embedder = FastEmbedder()
+    assert embedder.dimension == DEFAULT_EMBED_DIM
+    assert embedder.embed([]) == []
+
+
+def test_fastembedder_mocked_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify FastEmbedder lazy initialization and vector conversion."""
+
+    class MockTextEmbedding:
+        def __init__(self, model_name: str) -> None:
+            self.model_name = model_name
+
+        def embed(self, texts: list[str]) -> list[object]:
+            class MockArray:
+                def __init__(self, vals: list[float]) -> None:
+                    self.vals = vals
+
+                def tolist(self) -> list[float]:
+                    return self.vals
+
+            return [MockArray([0.1, 0.2, 0.3]) for _ in texts]
+
+    monkeypatch.setattr("fastembed.TextEmbedding", MockTextEmbedding)
+
+    embedder = FastEmbedder(model_name="mock-model", dimension=3)
+    assert embedder.dimension == 3
+    assert embedder._model_instance is None
+
+    # embed の呼び出しでモデルが遅延ロードされ、結果が返ること
+    vectors = embedder.embed(["hello", "world"])
+    assert embedder._model_instance is not None
+    assert vectors == [[0.1, 0.2, 0.3], [0.1, 0.2, 0.3]]
+
+    # embed_query の呼び出し
+    query_vec = embedder.embed_query("query")
+    assert query_vec == [0.1, 0.2, 0.3]
+
+
+def test_find_split_point_boundaries() -> None:
+    """Verify _find_split_point handles various split patterns."""
+    # 1. 空の探索範囲 (78行目)
+    assert _find_split_point("sample", 3, 3) == 3
+
+    # 2. Markdown 見出しの前 (83行目)
+    text_heading = "intro text\n# Heading 1\nbody text"
+    pt = _find_split_point(text_heading, 5, 20)
+    assert pt == 11
+
+    # 3. 単一改行 (93行目)
+    text_newline = "line1\nline2"
+    pt = _find_split_point(text_newline, 2, 8)
+    assert pt == 6
+
+    # 4. 句読点 (99行目)
+    text_punct = "文その一。文その二"
+    pt = _find_split_point(text_punct, 2, 7)
+    assert pt == 5  # '。' の直後
+
+
+def test_chunk_text_split_point_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify fallback to ideal_end when split point is <= start."""
+    # 160行目: end <= start となるようモック
+    monkeypatch.setattr(
+        "hysearch.core.chunker._find_split_point",
+        lambda text, search_start, search_end: 0,
+    )
+    chunks = chunk_text("01234567890123456789", chunk_size=10, overlap=3)
+    assert len(chunks) >= 2
+    assert chunks[0].end_char == 10

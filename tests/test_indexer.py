@@ -3,10 +3,13 @@
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from hysearch.core.embedder import DummyEmbedder
 from hysearch.core.indexer import (
     get_stored_file_hashes,
     index_directory,
+    index_file,
     scan_directory,
 )
 
@@ -138,3 +141,35 @@ def test_index_directory_on_progress_callback(
     assert len(calls) == 2
     assert calls[0] == (1, 2, "a.md")
     assert calls[1] == (2, 2, "b.md")
+
+
+def test_scan_directory_errors(tmp_path: Path) -> None:
+    """Verify scan_directory raises appropriate errors for invalid paths."""
+    missing = tmp_path / "nonexistent_dir"
+    with pytest.raises(FileNotFoundError, match="Directory not found"):
+        scan_directory(missing)
+
+    regular_file = tmp_path / "file.txt"
+    regular_file.write_text("content", encoding="utf-8")
+    with pytest.raises(NotADirectoryError, match="not a directory"):
+        scan_directory(regular_file)
+
+
+def test_index_file_empty(
+    memory_db: sqlite3.Connection,
+    tmp_path: Path,
+    dummy_embedder: DummyEmbedder,
+) -> None:
+    """Verify indexing empty file creates file metadata with 0 chunks."""
+    empty_file = tmp_path / "empty.md"
+    empty_file.write_text("", encoding="utf-8")
+
+    count = index_file(
+        conn=memory_db,
+        file_path=empty_file,
+        embedder=dummy_embedder,
+    )
+    assert count == 0
+
+    hashes = get_stored_file_hashes(memory_db)
+    assert str(empty_file.resolve()) in hashes

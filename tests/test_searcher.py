@@ -3,9 +3,11 @@
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from hysearch.core.embedder import DummyEmbedder
 from hysearch.core.indexer import index_file
-from hysearch.core.searcher import compute_rrf_scores, search
+from hysearch.core.searcher import compute_rrf_scores, search, search_bm25
 from hysearch.utils.text import clean_text, extract_snippet
 
 
@@ -19,6 +21,29 @@ def test_clean_text_and_extract_snippet() -> None:
     snippet = extract_snippet(content, query="keyword", max_length=40)
     assert "keyword" in snippet
     assert "..." in snippet
+
+
+def test_clean_text_and_extract_snippet_empty() -> None:
+    """Verify empty input handling for clean_text and extract_snippet."""
+    assert clean_text("") == ""
+    assert extract_snippet("") == ""
+
+
+def test_extract_snippet_fallback_no_match() -> None:
+    """Verify snippet fallback trims prefix with ellipsis when no match."""
+    long_content = "Word " * 50  # 250 chars
+    snippet = extract_snippet(long_content, query="nonexistent", max_length=30)
+    assert snippet.endswith("...")
+    assert len(snippet) <= 30
+
+
+def test_extract_snippet_match_at_end_of_text() -> None:
+    """Verify snippet window adjustment when match is near text end."""
+    content = ("prefix " * 20) + "endtarget"
+    snippet = extract_snippet(content, query="endtarget", max_length=35)
+    assert snippet.startswith("...")
+    assert not snippet.endswith("...")
+    assert "endtarget" in snippet
 
 
 def test_compute_rrf_scores() -> None:
@@ -125,3 +150,47 @@ def test_search_modes(
     assert res_vec.total_hits == 1
     assert res_vec.hits[0].bm25_rank is None
     assert res_vec.hits[0].vec_rank == 1
+
+
+def test_search_bm25_operational_error() -> None:
+    """Verify search_bm25 returns empty list when table is missing."""
+    conn = sqlite3.connect(":memory:")
+    # fts_chunks 未作成のため OperationalError が発生し [] が返る
+    results = search_bm25(conn, "keyword")
+    assert results == []
+    conn.close()
+
+
+def test_search_skips_missing_chunk_in_data(
+    memory_db: sqlite3.Connection,
+    dummy_embedder: DummyEmbedder,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify search gracefully skips chunk ID missing from chunks table."""
+    # 存在しない ID 99999 を返すよう search_bm25 をモック
+    monkeypatch.setattr(
+        "hysearch.core.searcher.search_bm25",
+        lambda conn, query, limit: [99999],
+    )
+    res = search(
+        conn=memory_db,
+        query="test",
+        embedder=dummy_embedder,
+        mode="bm25",
+    )
+    assert res.total_hits == 0
+    assert res.hits == []
+
+
+def test_search_on_empty_db(
+    memory_db: sqlite3.Connection,
+    dummy_embedder: DummyEmbedder,
+) -> None:
+    """Verify search on empty database returns zero hits response."""
+    res = search(
+        conn=memory_db,
+        query="empty query",
+        embedder=dummy_embedder,
+    )
+    assert res.total_hits == 0
+    assert res.hits == []

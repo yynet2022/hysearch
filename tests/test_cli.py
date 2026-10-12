@@ -130,3 +130,40 @@ def test_cli_query_zero_hits(tmp_path: Path) -> None:
     )
     assert res.exit_code == 0
     assert "No results found" in res.stdout
+
+
+def test_cli_reset_nonexistent_db(tmp_path: Path) -> None:
+    """Verify reset command on nonexistent database reports warning."""
+    missing_db = tmp_path / "missing.db"
+    res = runner.invoke(app, ["reset", "--db", str(missing_db)])
+    assert res.exit_code == 0
+    assert "does not exist" in res.stdout
+
+
+def test_cli_reset_prompt_abort(tmp_path: Path) -> None:
+    """Verify aborting reset confirmation preserves database."""
+    db_file = tmp_path / "keep.db"
+    db_file.write_text("data", encoding="utf-8")
+
+    res = runner.invoke(app, ["reset", "--db", str(db_file)], input="n\n")
+    assert res.exit_code != 0
+    assert "Aborted reset" in res.stdout
+    assert db_file.exists()
+
+
+def test_cli_reset_prompt_confirm_with_wal(tmp_path: Path) -> None:
+    """Verify confirming reset deletes database and extra journal files."""
+    db_file = tmp_path / "clean.db"
+    db_file.write_text("db_content", encoding="utf-8")
+
+    wal_file = tmp_path / "clean.db-wal"
+    wal_file.write_text("wal_content", encoding="utf-8")
+    shm_file = tmp_path / "clean.db-shm"
+    shm_file.write_text("shm_content", encoding="utf-8")
+
+    res = runner.invoke(app, ["reset", "--db", str(db_file)], input="y\n")
+    assert res.exit_code == 0
+    assert "Successfully deleted database" in res.stdout
+    assert not db_file.exists()
+    assert not wal_file.exists()
+    assert not shm_file.exists()
