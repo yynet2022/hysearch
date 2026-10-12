@@ -27,7 +27,7 @@ Lightweight, zero-daemon local hybrid search engine powered by SQLite and fastem
 
 ```bash
 # リポジトリのクローン
-git clone <repository-url>
+git clone https://github.com/yynet2022/hysearch.git
 cd hysearch
 
 # 仮想環境の作成と有効化
