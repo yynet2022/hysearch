@@ -91,3 +91,45 @@ def print_status(status_info: dict[str, Any]) -> None:
         table.add_row(str(key), str(value))
 
     console.print(table)
+
+
+def print_pruned_file(file_path: str, dry_run: bool = False) -> None:
+    """Print a single pruned file notification immediately.
+
+    Args:
+        file_path: Path of the missing file.
+        dry_run: Whether running in dry-run mode.
+    """
+    if dry_run:
+        console.print(
+            f"[yellow][Dry Run][/] Would remove: [dim]{file_path}[/]"
+        )
+    else:
+        console.print(f"[red]Removed:[/] {file_path}")
+
+
+def print_prune_summary(
+    total_checked: int, pruned_count: int, dry_run: bool = False
+) -> None:
+    """Print pruning summary panel.
+
+    Args:
+        total_checked: Total number of files checked in the database.
+        pruned_count: Number of missing files removed or to remove.
+        dry_run: Whether running in dry-run mode.
+    """
+    if pruned_count == 0:
+        console.print(
+            f"[green]Clean:[/] All {total_checked} files exist on disk."
+        )
+        return
+
+    action_label = "Files to Remove" if dry_run else "Files Removed"
+    title = "Prune Complete (Dry Run)" if dry_run else "Prune Complete"
+    color = "yellow" if dry_run else "red"
+    text = (
+        f"[bold white]Files Checked:[/] {total_checked}\n"
+        f"[bold {color}]{action_label}:[/] {pruned_count}"
+    )
+    panel = Panel(text, title=title, expand=False)
+    console.print(panel)

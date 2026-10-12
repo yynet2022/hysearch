@@ -347,3 +347,57 @@ def test_parse_extension_filters_empty() -> None:
     assert parse_extension_filters(None) is None
     assert parse_extension_filters([]) is None
     assert parse_extension_filters(["", "  "]) is None
+
+
+def test_cli_prune(tmp_path: Path) -> None:
+    """Verify prune command removes missing files (dry-run and json)."""
+    docs_dir = tmp_path / "prune_docs"
+    docs_dir.mkdir()
+    file_keep = docs_dir / "keep.md"
+    file_keep.write_text("Keep this file", encoding="utf-8")
+    file_del = docs_dir / "delete.md"
+    file_del.write_text("Delete this file", encoding="utf-8")
+
+    db_file = tmp_path / "prune_test.db"
+    runner.invoke(app, ["index", str(docs_dir), "--db", str(db_file)])
+
+    # 1. 物理ファイルを削除
+    file_del.unlink()
+
+    # 2. dry-run モードの実行
+    res_dry = runner.invoke(app, ["prune", "-n", "--db", str(db_file)])
+    assert res_dry.exit_code == 0
+    assert "Would remove:" in res_dry.stdout
+    assert "delete.md" in res_dry.stdout
+    assert "Files to Remove: 1" in res_dry.stdout
+
+    # 3. JSON モード（dry-run付き）
+    res_json_dry = runner.invoke(
+        app, ["prune", "-n", "--json", "--db", str(db_file)]
+    )
+    assert res_json_dry.exit_code == 0
+    data_dry = json.loads(res_json_dry.stdout)
+    assert data_dry["dry_run"] is True
+    assert data_dry["total_checked"] == 2
+    assert data_dry["pruned_count"] == 1
+    assert "delete.md" in data_dry["pruned_files"][0]
+
+    # 4. 通常実行（実削除）
+    res_prune = runner.invoke(app, ["prune", "--db", str(db_file)])
+    assert res_prune.exit_code == 0
+    assert "Removed:" in res_prune.stdout
+    assert "delete.md" in res_prune.stdout
+    assert "Files Removed: 1" in res_prune.stdout
+
+    # 5. 再度 prune 実行（Clean 状態）
+    res_clean = runner.invoke(app, ["prune", "--db", str(db_file)])
+    assert res_clean.exit_code == 0
+    assert "Clean:" in res_clean.stdout
+
+
+def test_cli_prune_nonexistent_db(tmp_path: Path) -> None:
+    """Verify prune command exits with error when database is missing."""
+    missing_db = tmp_path / "missing.db"
+    res = runner.invoke(app, ["prune", "--db", str(missing_db)])
+    assert res.exit_code == 1
+    assert "does not exist" in res.stdout

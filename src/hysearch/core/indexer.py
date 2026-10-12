@@ -23,6 +23,7 @@ from hysearch.core.models import IndexingStats
 
 PathLike = str | Path
 ProgressCallback = Callable[[int, int, Path], None]
+PruneCallback = Callable[[str, bool], None]
 
 
 def scan_directory(
@@ -226,3 +227,38 @@ def index_directory(
 
     stats.elapsed_seconds = round(time.perf_counter() - start_time, 4)
     return stats
+
+
+def prune_missing_files(
+    conn: sqlite3.Connection,
+    dry_run: bool = False,
+    on_missing: PruneCallback | None = None,
+) -> tuple[int, list[str]]:
+    """Remove database records for files that no longer exist on disk.
+
+    Args:
+        conn: Open SQLite connection.
+        dry_run: If True, do not actually delete rows from the database.
+        on_missing: Optional callback receiving (file_path_str, is_dry_run)
+            called immediately when each missing file is detected.
+
+    Returns:
+        tuple[int, list[str]]: (total_files_checked, pruned_file_paths).
+    """
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, path FROM files ORDER BY id;")
+    rows = cursor.fetchall()
+
+    total_checked = len(rows)
+    pruned: list[str] = []
+
+    for fid, fpath in rows:
+        if not Path(fpath).exists():
+            if on_missing is not None:
+                on_missing(fpath, dry_run)
+            if not dry_run:
+                with conn:
+                    conn.execute("DELETE FROM files WHERE id = ?;", (fid,))
+            pruned.append(fpath)
+
+    return total_checked, pruned

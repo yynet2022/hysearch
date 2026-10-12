@@ -339,7 +339,17 @@ class IndexingStats(BaseModel):
 * デフォルトモデル: `"sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"` (次元数: 384)
 * テスト実行時は、重いONNXモデルをロードせずランダムまたは固定値ベクトルを返す `DummyEmbedder` に差し替え可能な抽象プロトコル (`EmbedderProtocol`) を定義すること。
 
-### 6.4 `src/hysearch/core/searcher.py`
+### 6.4 `src/hysearch/core/indexer.py`
+* **インデックスパイプライン**:
+  * 指定ディレクトリ配下のファイルを再帰走査（デフォルト: `.md`, `.markdown`, `.txt`, `.py`, `.js`, `.ts`）。
+  * SHA-256ハッシュによる差分検知により、未変更ファイルをスキップ。
+  * `extensions` 引数により対象拡張子を上書き可能。
+* **孤立ファイル削除 (`prune_missing_files`)**:
+  * DB内の全登録ファイル（`files` テーブル）の実体存在を走査。
+  * ディスク上に存在しないファイルを検知し、`dry_run=False` の場合は `DELETE FROM files WHERE id = ?` を実行。外部キー制約（`CASCADE`）およびトリガーにより、チャンク・FTS5・ベクトルインデックスも連動して自動完全消去。
+  * 各欠落ファイル検知時にコールバック（`on_missing`）を呼び出し、リアルタイム都度通知を支援。
+
+### 6.5 `src/hysearch/core/searcher.py`
 * **メタデータ・属性フィルタリング (`get_filtered_chunk_ids`)**:
   * 検索実行前に、パスプレフィックス（`path_filter`）、ファイルglob（`glob_filter`）、更新日時（`since`, `until`）に基づいて対象ファイルを走査・判定し、合致するチャンクIDリスト（`target_ids`）を抽出する。
   * フィルタ条件に合致するファイル・チャンクが0件の場合は、FTS5およびベクトル検索を実行せず即座に0件の `SearchResponse` を返却する。
@@ -387,7 +397,14 @@ Typerを使用して実装。全コマンドで `--db` オプション（デフ�
 #### 3. `hysearch status`
 現在のインデックス状態を表示（ファイル数、チャンク総数、DBファイルサイズ、最終更新時刻）。
 
-#### 4. `hysearch reset`
+#### 4. `hysearch prune`
+ディスク上から削除・移動されたファイルを検出し、データベースから安全に除外。
+* オプション:
+  * `--dry-run` / `-n` (bool, default: False): 実際には削除せず、対象ファイルのみ表示
+  * `--json` (bool, default: False): 結果をJSONで標準出力
+  * `--db` (Path, default: `./.hysearch.db`): データベースファイルパス
+
+#### 5. `hysearch reset`
 DBファイルを削除または全テーブルをクリア（確認プロンプト付き）。
 
 ---

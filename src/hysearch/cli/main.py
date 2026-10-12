@@ -22,6 +22,8 @@ from rich.progress import (
 from hysearch.cli.display import (
     console,
     print_indexing_stats,
+    print_prune_summary,
+    print_pruned_file,
     print_search_results,
     print_status,
 )
@@ -32,7 +34,7 @@ from hysearch.core.config import (
     DEFAULT_RRF_K,
 )
 from hysearch.core.database import get_connection, init_db
-from hysearch.core.indexer import index_directory
+from hysearch.core.indexer import index_directory, prune_missing_files
 from hysearch.core.searcher import SearchMode, search
 
 app = typer.Typer(
@@ -408,3 +410,58 @@ def reset_cmd(
             extra.unlink(missing_ok=True)
 
     console.print(f"[green]Successfully deleted database:[/] {db}")
+
+
+@app.command(name="prune")
+def prune_cmd(
+    dry_run: Annotated[
+        bool,
+        typer.Option(
+            "--dry-run",
+            "-n",
+            help="Show files to remove without deleting them",
+        ),
+    ] = False,
+    output_json: Annotated[
+        bool,
+        typer.Option("--json", help="Output results in JSON format"),
+    ] = False,
+    db: Annotated[
+        Path,
+        typer.Option("--db", help="Path to SQLite database file"),
+    ] = DEFAULT_DB_PATH,
+) -> None:
+    """Remove database entries for files that no longer exist on disk."""
+    if not db.exists():
+        console.print(
+            f"[red]Error:[/] Database file '{db}' does not exist. "
+            "Run 'hysearch index' first."
+        )
+        raise typer.Exit(code=1)
+
+    def on_missing(file_path: str, is_dry_run: bool) -> None:
+        if not output_json:
+            print_pruned_file(file_path, dry_run=is_dry_run)
+
+    with get_connection(db) as conn:
+        init_db(conn)
+        total_checked, pruned_files = prune_missing_files(
+            conn=conn,
+            dry_run=dry_run,
+            on_missing=on_missing,
+        )
+
+    if output_json:
+        result = {
+            "dry_run": dry_run,
+            "total_checked": total_checked,
+            "pruned_count": len(pruned_files),
+            "pruned_files": pruned_files,
+        }
+        typer.echo(json.dumps(result, indent=2))
+    else:
+        print_prune_summary(
+            total_checked=total_checked,
+            pruned_count=len(pruned_files),
+            dry_run=dry_run,
+        )

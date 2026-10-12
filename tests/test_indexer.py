@@ -10,6 +10,7 @@ from hysearch.core.indexer import (
     get_stored_file_hashes,
     index_directory,
     index_file,
+    prune_missing_files,
     scan_directory,
 )
 
@@ -213,3 +214,68 @@ def test_index_directory_with_extensions_filter(
     assert len(hashes_after) == 2
     assert str((tmp_path / "script.py").resolve()) in hashes_after
     assert str((tmp_path / "doc.md").resolve()) in hashes_after
+
+
+def test_prune_missing_files(
+    memory_db: sqlite3.Connection,
+    tmp_path: Path,
+    dummy_embedder: DummyEmbedder,
+) -> None:
+    """Verify prune_missing_files removes orphaned files and cascades."""
+    file_keep = tmp_path / "keep.md"
+    file_keep.write_text("Keep me", encoding="utf-8")
+    file_remove = tmp_path / "remove.md"
+    file_remove.write_text("Delete me", encoding="utf-8")
+
+    index_directory(memory_db, tmp_path, dummy_embedder)
+
+    assert memory_db.execute("SELECT COUNT(*) FROM files;").fetchone()[0] == 2
+    assert memory_db.execute("SELECT COUNT(*) FROM chunks;").fetchone()[0] == 2
+
+    # 物理ファイルを削除
+    file_remove.unlink()
+
+    # 1. dry-run モードの検証
+    callback_calls: list[tuple[str, bool]] = []
+
+    def on_missing(path_str: str, dry_run: bool) -> None:
+        callback_calls.append((path_str, dry_run))
+
+    total, dry_pruned = prune_missing_files(
+        memory_db, dry_run=True, on_missing=on_missing
+    )
+    assert total == 2
+    assert len(dry_pruned) == 1
+    assert str(file_remove.resolve()) in dry_pruned
+    assert len(callback_calls) == 1
+    assert callback_calls[0] == (str(file_remove.resolve()), True)
+    # DBからはまだ消えていない
+    assert memory_db.execute("SELECT COUNT(*) FROM files;").fetchone()[0] == 2
+
+    # 2. 通常実行モードの検証
+    callback_calls.clear()
+    total, pruned = prune_missing_files(
+        memory_db, dry_run=False, on_missing=on_missing
+    )
+    assert total == 2
+    assert len(pruned) == 1
+    assert str(file_remove.resolve()) in pruned
+    assert len(callback_calls) == 1
+    assert callback_calls[0] == (str(file_remove.resolve()), False)
+
+    # DBから files, chunks, fts, vec がカスケード削除されていることを確認
+    assert memory_db.execute("SELECT COUNT(*) FROM files;").fetchone()[0] == 1
+    assert memory_db.execute("SELECT COUNT(*) FROM chunks;").fetchone()[0] == 1
+    assert (
+        memory_db.execute("SELECT COUNT(*) FROM fts_chunks;").fetchone()[0]
+        == 1
+    )
+    assert (
+        memory_db.execute("SELECT COUNT(*) FROM vec_chunks;").fetchone()[0]
+        == 1
+    )
+
+    # 3. 再度 prune 実行（欠落ファイル0件）
+    total2, pruned2 = prune_missing_files(memory_db, dry_run=False)
+    assert total2 == 1
+    assert pruned2 == []
