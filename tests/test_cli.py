@@ -109,7 +109,7 @@ def test_cli_status_nonexistent_db(tmp_path: Path) -> None:
     missing_db = tmp_path / "missing.db"
     res = runner.invoke(app, ["status", "--db", str(missing_db)])
     assert res.exit_code == 0
-    assert "does not exist" in res.stdout
+    assert "does not exist" in " ".join(res.stdout.split())
 
     res_json = runner.invoke(
         app, ["status", "--json", "--db", str(missing_db)]
@@ -137,7 +137,7 @@ def test_cli_reset_nonexistent_db(tmp_path: Path) -> None:
     missing_db = tmp_path / "missing.db"
     res = runner.invoke(app, ["reset", "--db", str(missing_db)])
     assert res.exit_code == 0
-    assert "does not exist" in res.stdout
+    assert "does not exist" in " ".join(res.stdout.split())
 
 
 def test_cli_reset_prompt_abort(tmp_path: Path) -> None:
@@ -400,4 +400,4 @@ def test_cli_prune_nonexistent_db(tmp_path: Path) -> None:
     missing_db = tmp_path / "missing.db"
     res = runner.invoke(app, ["prune", "--db", str(missing_db)])
     assert res.exit_code == 1
-    assert "does not exist" in res.stdout
+    assert "does not exist" in " ".join(res.stdout.split())
