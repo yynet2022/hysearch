@@ -222,6 +222,7 @@ CREATE TABLE IF NOT EXISTS files (
     path TEXT NOT NULL UNIQUE,
     hash TEXT NOT NULL,
     chunk_count INTEGER NOT NULL,
+    mtime REAL NOT NULL DEFAULT 0.0,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -267,7 +268,12 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_chunks USING vec0(
 );
 ```
 
-### 5.2 sqlite-vec 接続要件
+### 5.2 スキーマバージョニングと自動マイグレーション
+SQLite の `PRAGMA user_version` を用いてスキーマバージョンを管理する（現行バージョン: `1`）。
+* `user_version = 0`（初期バージョン）から `1` への移行時、`files` テーブルに `mtime` カラムが存在しない場合は `ALTER TABLE files ADD COLUMN mtime REAL NOT NULL DEFAULT 0.0;` を自動実行してマイグレーションを行う。
+* `get_schema_version(conn)` により現在のスキーマバージョンを取得可能。
+
+### 5.3 sqlite-vec 接続要件
 ```python
 import sqlite3
 import sqlite_vec
@@ -334,11 +340,15 @@ class IndexingStats(BaseModel):
 * テスト実行時は、重いONNXモデルをロードせずランダムまたは固定値ベクトルを返す `DummyEmbedder` に差し替え可能な抽象プロトコル (`EmbedderProtocol`) を定義すること。
 
 ### 6.4 `src/hysearch/core/searcher.py`
+* **メタデータ・属性フィルタリング (`get_filtered_chunk_ids`)**:
+  * 検索実行前に、パスプレフィックス（`path_filter`）、ファイルglob（`glob_filter`）、更新日時（`since`, `until`）に基づいて対象ファイルを走査・判定し、合致するチャンクIDリスト（`target_ids`）を抽出する。
+  * フィルタ条件に合致するファイル・チャンクが0件の場合は、FTS5およびベクトル検索を実行せず即座に0件の `SearchResponse` を返却する。
 * **BM25クエリ**:
-  * FTS5 `trigram` の場合、検索文字列が3文字未満のときは `"prefix*"` クエリ化するかLIKE検索へのフォールバックを考慮。基本は `SELECT rowid FROM fts_chunks WHERE fts_chunks MATCH ? ORDER BY rank LIMIT ?`。
+  * FTS5 `trigram` の場合、検索文字列が3文字未満のときは BM25 をスキップしてベクトル検索単体に委ねる。
+  * `target_ids` が指定されている場合は `WHERE fts_chunks MATCH ? AND rowid IN (...) ORDER BY rank LIMIT ?` を実行。
 * **Vectorクエリ**:
   * `query` を埋め込みベクトルに変換後、`sqlite_vec.serialize_float32(vec)` を使用。
-  * `SELECT id FROM vec_chunks WHERE embedding MATCH ? ORDER BY distance LIMIT ?`
+  * `target_ids` が指定されている場合は `WHERE embedding MATCH ? AND k = ? AND id IN (...) ORDER BY distance` を実行。
 * **RRF統合ロジック**:
   * BM25上位 $N$ 件（例: 50件）とVector上位 $N$ 件（例: 50件）を取得。
   * 各IDについて $RRF\_Score$ を計算して合算し、降順ソートの上位 $K$ 件を返す。
@@ -365,6 +375,12 @@ Typerを使用して実装。全コマンドで `--db` オプション（デフ�
   * `--top` / `-k` (int, default: 5): 上位件数
   * `--mode` (choice: `hybrid` | `bm25` | `vector`, default: `hybrid`)
   * `--rrf-k` (int, default: 60): RRF平滑化定数
+  * `--path` / `-p` (str | None): ディレクトリパスやファイル名プレフィックスで絞り込み
+  * `--glob` / `-g` (str | None): ファイルglobパターン（`*.md`, `src/**/*.py` 等）で絞り込み
+  * `--since` (str | None): 指定日時以降に更新されたファイルに限定（ISO 8601, YYYY-MM-DD, YYYY/MM/DD 等）
+  * `--after` (str | None): `--since` のエイリアス
+  * `--until` (str | None): 指定日時以前に更新されたファイルに限定
+  * `--before` (str | None): `--until` のエイリアス
   * `--json` (bool, default: False): 結果をJSONで標準出力（パイプ処理用）
 
 #### 3. `hysearch status`

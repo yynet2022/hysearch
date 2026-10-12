@@ -76,6 +76,24 @@ hysearch query "セマンティック検索" -k 10
 hysearch query "FastEmbed" --mode bm25
 hysearch query "自然言語処理" --mode vector
 
+# ディレクトリやパスプレフィックスで絞り込み (--path / -p)
+hysearch query "設定" --path ./docs
+hysearch query "アーキテクチャ" -p src/hysearch/
+
+# ファイルの glob パターンで絞り込み (--glob / -g)
+hysearch query "仕様" --glob "*.md"
+hysearch query "アルゴリズム" -g "src/**/*.py"
+
+# 更新日時で絞り込み (--since / --after: 指定日時以降、--until / --before: 指定日時以前)
+# 日時は ISO 8601 (YYYY-MM-DD 等) や YYYY/MM/DD、年月指定 (YYYY-MM 等) に対応
+hysearch query "リリースノート" --since 2026-10-01
+hysearch query "変更履歴" --after 2026/10
+hysearch query "旧仕様" --until 2026-09-30
+hysearch query "設計方針" --before 2026/08
+
+# フィルタの組み合わせ（例: 2026年10月以降に更新された docs 配下の Markdown）
+hysearch query "ハイブリッド検索" -p ./docs -g "*.md" --since 2026-10-01
+
 # JSON 出力 (jq や他ツール、LLM エージェントへのパイプライン処理用)
 hysearch query "アーキテクチャ" --json | jq .
 ```
