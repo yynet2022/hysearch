@@ -112,3 +112,29 @@ def test_get_stored_file_hashes(
     hashes = get_stored_file_hashes(memory_db)
     assert len(hashes) == 1
     assert str(file1.resolve()) in hashes
+
+
+def test_index_directory_on_progress_callback(
+    memory_db: sqlite3.Connection,
+    tmp_path: Path,
+    dummy_embedder: DummyEmbedder,
+) -> None:
+    """Verify on_progress callback receives correct indices and file paths."""
+    (tmp_path / "a.md").write_text("A", encoding="utf-8")
+    (tmp_path / "b.md").write_text("B", encoding="utf-8")
+
+    calls: list[tuple[int, int, str]] = []
+
+    def callback(current: int, total: int, file_path: Path) -> None:
+        calls.append((current, total, file_path.name))
+
+    index_directory(
+        conn=memory_db,
+        target_dir=tmp_path,
+        embedder=dummy_embedder,
+        on_progress=callback,
+    )
+
+    assert len(calls) == 2
+    assert calls[0] == (1, 2, "a.md")
+    assert calls[1] == (2, 2, "b.md")

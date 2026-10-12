@@ -10,6 +10,14 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
+from rich.progress import (
+    BarColumn,
+    MofNCompleteColumn,
+    Progress,
+    SpinnerColumn,
+    TextColumn,
+    TimeElapsedColumn,
+)
 
 from hysearch.cli.display import (
     console,
@@ -64,15 +72,35 @@ def index_cmd(
     ] = DEFAULT_DB_PATH,
 ) -> None:
     """Index or update documents in the specified directory."""
-    with get_connection(db) as conn:
-        init_db(conn)
-        stats = index_directory(
-            conn=conn,
-            target_dir=dir_path,
-            chunk_size=chunk_size,
-            overlap=overlap,
-            force=force,
-        )
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[bold cyan]{task.description}[/]"),
+        BarColumn(),
+        MofNCompleteColumn(),
+        TimeElapsedColumn(),
+        console=console,
+        transient=True,
+    ) as progress:
+        task_id = progress.add_task("Scanning files...", total=None)
+
+        def on_progress(current: int, total: int, file_path: Path) -> None:
+            progress.update(
+                task_id,
+                total=total,
+                completed=current,
+                description=f"[{current}/{total}] {file_path.name}",
+            )
+
+        with get_connection(db) as conn:
+            init_db(conn)
+            stats = index_directory(
+                conn=conn,
+                target_dir=dir_path,
+                chunk_size=chunk_size,
+                overlap=overlap,
+                force=force,
+                on_progress=on_progress,
+            )
     print_indexing_stats(stats)
 
 

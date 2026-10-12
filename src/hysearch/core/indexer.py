@@ -7,7 +7,7 @@ vector representations in SQLite.
 
 import sqlite3
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 import sqlite_vec
@@ -22,6 +22,7 @@ from hysearch.core.embedder import EmbedderProtocol, FastEmbedder
 from hysearch.core.models import IndexingStats
 
 PathLike = str | Path
+ProgressCallback = Callable[[int, int, Path], None]
 
 
 def scan_directory(
@@ -165,6 +166,7 @@ def index_directory(
     chunk_size: int = DEFAULT_CHUNK_SIZE,
     overlap: int = DEFAULT_CHUNK_OVERLAP,
     force: bool = False,
+    on_progress: ProgressCallback | None = None,
 ) -> IndexingStats:
     """Scan and index all matching documents within the target directory.
 
@@ -175,6 +177,8 @@ def index_directory(
         chunk_size: Target characters per chunk.
         overlap: Overlap characters between chunks.
         force: If True, re-index all files ignoring hash equality.
+        on_progress: Optional callback receiving (current_index, total_count,
+            current_file_path).
 
     Returns:
         IndexingStats: Summary statistics of the indexing process.
@@ -187,9 +191,13 @@ def index_directory(
     files = scan_directory(target_dir)
     stored_hashes = get_stored_file_hashes(conn)
 
-    stats = IndexingStats(files_scanned=len(files))
+    total_files = len(files)
+    stats = IndexingStats(files_scanned=total_files)
 
-    for file_path in files:
+    for idx, file_path in enumerate(files, start=1):
+        if on_progress is not None:
+            on_progress(idx, total_files, file_path)
+
         resolved_str = str(file_path.resolve())
         current_hash = compute_file_hash(file_path)
 
