@@ -26,7 +26,7 @@ def print_indexing_stats(stats: IndexingStats) -> None:
         f"[bold cyan]Files Indexed:[/] {stats.files_indexed}\n"
         f"[bold yellow]Files Skipped:[/] {stats.files_skipped}\n"
         f"[bold magenta]Chunks Created:[/] {stats.chunks_created}\n"
-        f"[bold white]Elapsed Time:[/] {stats.elapsed_seconds:.3f} s"
+        f"[bold]Elapsed Time:[/] {stats.elapsed_seconds:.3f} s"
     )
     panel = Panel(text, title="Indexing Complete", expand=False)
     console.print(panel)
@@ -56,7 +56,7 @@ def print_search_results(response: SearchResponse) -> None:
     table.add_column("Score", justify="right", style="green", width=10)
     table.add_column("File", style="blue")
     table.add_column("Ranks (BM25 / Vec)", justify="center", width=18)
-    table.add_column("Snippet", style="white")
+    table.add_column("Snippet")
 
     for i, hit in enumerate(response.hits, start=1):
         b_rank = str(hit.bm25_rank) if hit.bm25_rank is not None else "-"
@@ -128,7 +128,7 @@ def print_prune_summary(
     title = "Prune Complete (Dry Run)" if dry_run else "Prune Complete"
     color = "yellow" if dry_run else "red"
     text = (
-        f"[bold white]Files Checked:[/] {total_checked}\n"
+        f"[bold]Files Checked:[/] {total_checked}\n"
         f"[bold {color}]{action_label}:[/] {pruned_count}"
     )
     panel = Panel(text, title=title, expand=False)
