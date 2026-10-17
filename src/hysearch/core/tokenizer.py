@@ -109,7 +109,7 @@ def _get_sudachi_tokenizer(dict_type: str) -> Any:
     if dict_type not in _SUDACHI_CACHE:
         from sudachipy import Dictionary
 
-        _SUDACHI_CACHE[dict_type] = Dictionary(dict=dict_type).create()
+        _SUDACHI_CACHE[dict_type] = Dictionary(dict=dict_type).tokenizer()
     return _SUDACHI_CACHE[dict_type]
 
 

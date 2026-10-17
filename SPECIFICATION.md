@@ -166,6 +166,7 @@ dev = [
     "ruff>=0.4.0",
     "mypy>=1.10.0",
     "httpx>=0.27.0",
+    "httpx2>=0.1.0",
 ]
 
 [project.scripts]

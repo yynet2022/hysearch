@@ -107,7 +107,7 @@ def test_get_sudachi_tokenizer_and_tokenize(
     ]
 
     mock_dict_cls = MagicMock()
-    mock_dict_cls.return_value.create.return_value = mock_tok_instance
+    mock_dict_cls.return_value.tokenizer.return_value = mock_tok_instance
 
     fake_sudachipy.Dictionary = mock_dict_cls  # type: ignore[attr-defined]
     fake_sudachipy.SplitMode = FakeSplitMode  # type: ignore[attr-defined]
