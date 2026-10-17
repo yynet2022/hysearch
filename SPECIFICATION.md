@@ -12,7 +12,7 @@
 ### 1.2 コアバリュー
 1. **Zero-Daemon / Zero-Container**: SQLite単一ファイル（`.hysearch.db` 等）のみで完結。
 2. **Fast Startup / Low Resource**: PyTorch等を使用せず、ONNXベースの `fastembed` を採用しCLI呼び出しオーバーヘッドを最小化。
-3. **日本語対応 (Portable)**: 外部形態素解析エンジンのインストール不要な SQLite FTS5 `trigram` トークナイザーを採用。
+3. **日本語形態素解析 & Trigram 両対応**: 外部形態素解析エンジンのインストール不要な SQLite FTS5 `trigram` トークナイザーを標準搭載しつつ、オプションで `SudachiPy`（`SplitMode.A` + 正規化）による高精度な日本語分かち書き・表記揺れ吸収検索（1〜2文字単語のBM25一致を含む）に対応。
 4. **Unix哲学 & エージェント親和性**: 人間向けのRichテーブル表示と、他CLI/LLMエージェントからパイプ処理しやすい `--json` 出力の両対応。
 
 ---
@@ -31,25 +31,25 @@
 │  - SHA-256ハッシュによる差分更新検知                   │
 └────────┬───────────────────────────────────────────────┘
          │
-         ├─── (Raw Text) ───────┐
-         │                      ▼
-         │             ┌─────────────────┐
-         │             │  SQLite FTS5    │
-         │             │  (BM25 Score)   │
-         │             └────────┬────────┘
-         │                      │
-         ▼                      │
-┌─────────────────┐             │
-│ FastEmbed       │             │
-│ (ONNX Runtime)  │             │
-└────────┬────────┘             │
-         ▼                      │
-┌─────────────────┐             │
-│ sqlite-vec      │             │
-│ (Vector Search) │             │
-└────────┬────────┘             │
-         │                      │
-         ▼                      ▼
+         ├─── (Raw / Sudachi Tokenized Text) ──┐
+         │                                     ▼
+         │                            ┌─────────────────┐
+         │                            │  SQLite FTS5    │
+         │                            │  (BM25 Score)   │
+         │                            └────────┬────────┘
+         │                                     │
+         ▼                                     │
+┌─────────────────┐                            │
+│ FastEmbed       │                            │
+│ (ONNX Runtime)  │                            │
+└────────┬────────┘                            │
+         ▼                                     │
+┌─────────────────┐                            │
+│ sqlite-vec      │                            │
+│ (Vector Search) │                            │
+└────────┬────────┘                            │
+         │                                     │
+         ▼                                     ▼
 ┌────────────────────────────────────────────────────────┐
 │ Reciprocal Rank Fusion (RRF) Engine                    │
 │  - Rank統合スコアリング                                │
@@ -92,6 +92,7 @@ hysearch/
 │       │   ├── database.py        # SQLite接続・sqlite-vec拡張ロード・初期化
 │       │   ├── chunker.py         # 文書分割・ハッシュ計算
 │       │   ├── embedder.py        # FastEmbedラッパー
+│       │   ├── tokenizer.py       # トークナイザー自動検出・Sudachi分かち書き・正規化
 │       │   ├── indexer.py         # インデックス登録・更新パイプライン
 │       │   ├── searcher.py        # ハイブリッド検索・RRF統合ロジック
 │       │   └── models.py          # Pydanticデータモデル / 型定義
@@ -104,6 +105,7 @@ hysearch/
 │   ├── test_cli.py                # Typer Runner によるCLIテスト
 │   ├── test_chunker.py            # チャンキング・ハッシュ検知テスト
 │   ├── test_database.py           # テーブル作成・FTS5/sqlite-vec動作テスト
+│   ├── test_tokenizer.py          # トークナイザー解決・Sudachi分かち書きテスト
 │   ├── test_indexer.py            # 差分インデックス処理テスト
 │   └── test_searcher.py           # RRF計算・検索ロジックテスト
 ├── .gitignore
@@ -140,6 +142,22 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+sudachi = [
+    "sudachipy>=0.6.8",
+    "sudachidict_core>=20240109",
+]
+sudachi-core = [
+    "sudachipy>=0.6.8",
+    "sudachidict_core>=20240109",
+]
+sudachi-small = [
+    "sudachipy>=0.6.8",
+    "sudachidict_small>=20240109",
+]
+sudachi-full = [
+    "sudachipy>=0.6.8",
+    "sudachidict_full>=20240109",
+]
 dev = [
     "pytest>=8.0.0",
     "pytest-cov>=5.0.0",
@@ -198,6 +216,7 @@ warn_unused_ignores = true
 module = [
     "sqlite_vec.*",
     "fastembed.*",
+    "sudachipy.*",
 ]
 ignore_missing_imports = true
 
@@ -213,9 +232,15 @@ addopts = "-ra -q --cov=hysearch --cov-report=term-missing"
 ## 5. データベース設計 (SQLite Schema)
 
 ### 5.1 スキーマ定義
-DBには、メタデータ管理、元データ実体、FTS5全文検索テーブル、`sqlite-vec`仮想テーブルの4つを構成する。
+DBには、DB設定メタデータ（`meta`）、ファイル同期メタデータ（`files`）、元データ実体（`chunks`）、FTS5全文検索テーブル（`fts_chunks`）、`sqlite-vec`仮想テーブル（`vec_chunks`）を構成する。
 
 ```sql
+-- 0. DBメタデータ管理（使用トークナイザー等の記録）
+CREATE TABLE IF NOT EXISTS meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
 -- 1. ファイル単位の同期メタデータ（差分検知用）
 CREATE TABLE IF NOT EXISTS files (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -238,7 +263,7 @@ CREATE TABLE IF NOT EXISTS chunks (
     UNIQUE(file_id, chunk_index)
 );
 
--- 3. 全文検索用 FTS5 仮想テーブル (trigram で日本語・英語を同一処理)
+-- 3A. 全文検索用 FTS5 仮想テーブル (trigram モード時)
 CREATE VIRTUAL TABLE IF NOT EXISTS fts_chunks USING fts5(
     content,
     content='chunks',
@@ -246,7 +271,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS fts_chunks USING fts5(
     tokenize='trigram'
 );
 
--- 4. FTS5同期用トリガー
+-- 4A. FTS5同期用トリガー (trigram モード時)
 CREATE TRIGGER IF NOT EXISTS chunks_ai AFTER INSERT ON chunks BEGIN
     INSERT INTO fts_chunks(rowid, content) VALUES (new.id, new.content);
 END;
@@ -260,6 +285,16 @@ CREATE TRIGGER IF NOT EXISTS chunks_au AFTER UPDATE ON chunks BEGIN
     INSERT INTO fts_chunks(rowid, content) VALUES (new.id, new.content);
 END;
 
+-- 3B. 全文検索用 FTS5 仮想テーブル (sudachi-* モード時: スペース区切りの正規化トークン列を格納)
+CREATE VIRTUAL TABLE IF NOT EXISTS fts_chunks USING fts5(
+    content,
+    tokenize='unicode61'
+);
+
+CREATE TRIGGER IF NOT EXISTS chunks_ad AFTER DELETE ON chunks BEGIN
+    DELETE FROM fts_chunks WHERE rowid = old.id;
+END;
+
 -- 5. ベクトル検索テーブル (sqlite-vec)
 -- デフォルトモデル: sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2 (384次元)
 CREATE VIRTUAL TABLE IF NOT EXISTS vec_chunks USING vec0(
@@ -269,8 +304,9 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_chunks USING vec0(
 ```
 
 ### 5.2 スキーマバージョニングと自動マイグレーション
-SQLite の `PRAGMA user_version` を用いてスキーマバージョンを管理する（現行バージョン: `1`）。
-* `user_version = 0`（初期バージョン）から `1` への移行時、`files` テーブルに `mtime` カラムが存在しない場合は `ALTER TABLE files ADD COLUMN mtime REAL NOT NULL DEFAULT 0.0;` を自動実行してマイグレーションを行う。
+SQLite の `PRAGMA user_version` を用いてスキーマバージョンを管理する（現行バージョン: `2`）。
+* `user_version = 0`（初期バージョン）からの移行時、`files` テーブルに `mtime` カラムが存在しない場合は `ALTER TABLE files ADD COLUMN mtime REAL NOT NULL DEFAULT 0.0;` を自動実行してマイグレーションを行う。
+* `user_version < 2` からの移行時、`meta` テーブルを作成し、既存の `fts_chunks` テーブルがある場合は `tokenizer = 'trigram'` として記録する。
 * `get_schema_version(conn)` により現在のスキーマバージョンを取得可能。
 
 ### 5.3 sqlite-vec 接続要件
@@ -325,6 +361,7 @@ class IndexingStats(BaseModel):
     files_skipped: int = 0
     chunks_created: int = 0
     elapsed_seconds: float = 0.0
+    tokenizer: str = "trigram"
 ```
 
 ### 6.2 `src/hysearch/core/chunker.py`
@@ -339,22 +376,32 @@ class IndexingStats(BaseModel):
 * デフォルトモデル: `"sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"` (次元数: 384)
 * テスト実行時は、重いONNXモデルをロードせずランダムまたは固定値ベクトルを返す `DummyEmbedder` に差し替え可能な抽象プロトコル (`EmbedderProtocol`) を定義すること。
 
-### 6.4 `src/hysearch/core/indexer.py`
+### 6.4 `src/hysearch/core/tokenizer.py`
+* **トークナイザー解決と自動検出**:
+  * 初回インデックス作成時に `--tokenizer` が未指定の場合、`importlib.util.find_spec` を用いて `sudachi-full` → `sudachi-core` → `sudachi-small` → `trigram` の優先順位で利用可能なトークナイザーを自動検出し、`meta` テーブルに記録する。
+  * 明示的に指定されたトークナイザーが環境にインストールされていない場合は `RuntimeError` を送出する。
+* **Sudachi 分かち書きと正規化 (`tokenize_with_sudachi`)**:
+  * `SudachiPy` の `SplitMode.A`（短単位分割）と `morpheme.normalized_form()`（表記正規化）を組み合わせて形態素解析を実行し、記号・句読点を除いた語幹トークン列を抽出する。
+  * FTS5（`unicode61`）登録用にスペース区切り文字列へ整形する（`format_fts_content`）とともに、検索クエリも同様に分割・正規化して `MATCH` 式を構築する（`build_fts_query`）。
+
+### 6.5 `src/hysearch/core/indexer.py`
 * **インデックスパイプライン**:
   * 指定ディレクトリ配下のファイルを再帰走査（デフォルト: `.md`, `.markdown`, `.txt`, `.py`, `.js`, `.ts`）。
   * SHA-256ハッシュによる差分検知により、未変更ファイルをスキップ。
   * `extensions` 引数により対象拡張子を上書き可能。
+  * `chunks` テーブルには常に生テキストを保存し（スニペット表示用）、トークナイザーが `sudachi-*` の場合は `format_fts_content` で分かち書きしたテキストを `fts_chunks` に挿入する。
 * **孤立ファイル削除 (`prune_missing_files`)**:
   * DB内の全登録ファイル（`files` テーブル）の実体存在を走査。
   * ディスク上に存在しないファイルを検知し、`dry_run=False` の場合は `DELETE FROM files WHERE id = ?` を実行。外部キー制約（`CASCADE`）およびトリガーにより、チャンク・FTS5・ベクトルインデックスも連動して自動完全消去。
   * 各欠落ファイル検知時にコールバック（`on_missing`）を呼び出し、リアルタイム都度通知を支援。
 
-### 6.5 `src/hysearch/core/searcher.py`
+### 6.6 `src/hysearch/core/searcher.py`
 * **メタデータ・属性フィルタリング (`get_filtered_chunk_ids`)**:
   * 検索実行前に、パスプレフィックス（`path_filter`）、ファイルglob（`glob_filter`）、更新日時（`since`, `until`）に基づいて対象ファイルを走査・判定し、合致するチャンクIDリスト（`target_ids`）を抽出する。
   * フィルタ条件に合致するファイル・チャンクが0件の場合は、FTS5およびベクトル検索を実行せず即座に0件の `SearchResponse` を返却する。
 * **BM25クエリ**:
-  * FTS5 `trigram` の場合、検索文字列が3文字未満のときは BM25 をスキップしてベクトル検索単体に委ねる。
+  * DBの `meta` テーブルから使用トークナイザーを取得し、`build_fts_query` でクエリを構築する。
+  * FTS5 `trigram` の場合、検索文字列が3文字未満のときは BM25 をスキップしてベクトル検索単体に委ねる。一方、`sudachi-*` の場合は1〜2文字の単語（例: 「AI」「設定」「猫」）でも分かち書きトークン単位でBM25検索を実行する。
   * `target_ids` が指定されている場合は `WHERE fts_chunks MATCH ? AND rowid IN (...) ORDER BY rank LIMIT ?` を実行。
 * **Vectorクエリ**:
   * `query` を埋め込みベクトルに変換後、`sqlite_vec.serialize_float32(vec)` を使用。
@@ -377,8 +424,9 @@ Typerを使用して実装。全コマンドで `--db` オプション（デフ�
 * オプション:
   * `--chunk-size` (int, default: 500)
   * `--overlap` (int, default: 100)
-  * `--force` (bool, default: False) - ハッシュ差分を無視して全再構築
+  * `--force` / `-f` (bool, default: False) - ハッシュ差分を無視して全再構築
   * `--ext` / `-e` (list[str] | None, default: None) - インデックス対象の拡張子（指定した場合デフォルトを上書き。既存の他拡張子データはDBに保持）
+  * `--tokenizer` / `-t` (str | None, default: None) - FTSトークナイザーの指定（`sudachi-full`, `sudachi-core`, `sudachi-small`, `sudachi`, `trigram`。省略時は初回に自動検出しDBに記録。既存DBと異なるトークナイザーに変更する場合は `--force` が必須）
 
 #### 2. `hysearch query [QUERY]`
 自然言語またはキーワードでハイブリッド検索を実行。
@@ -395,7 +443,7 @@ Typerを使用して実装。全コマンドで `--db` オプション（デフ�
   * `--json` (bool, default: False): 結果をJSONで標準出力（パイプ処理用）
 
 #### 3. `hysearch status`
-現在のインデックス状態を表示（ファイル数、チャンク総数、DBファイルサイズ、最終更新時刻）。
+現在のインデックス状態を表示（使用トークナイザー、ファイル数、チャンク総数、DBファイルサイズ、最終更新時刻）。
 
 #### 4. `hysearch prune`
 ディスク上から削除・移動されたファイルを検出し、データベースから安全に除外。
@@ -413,9 +461,9 @@ DBファイルを削除または全テーブルをクリア（確認プロンプ
 
 1. **`sqlite-vec` のトランザクション**:
    * `vec_chunks` は仮想テーブルであるため、同一トランザクション内で複数件をINSERTする際はコミットのタイミングに注意する。
-2. **日本語短文字検索の trigram 挙動**:
-   * FTS5 `trigram` トークナイザーは3文字以上のサブストリングでインデックスを作成する。1〜2文字のクエリ（例: 「AI」「設定」）が入力された場合、FTS5の MATCH クエリで構文エラーとなることがある。
-   * **対策**: クエリが3文字未満の場合は BM25 検索をスキップしてベクトル検索単体でフォールバックするか、クエリの前後にワイルドカードを付与するハンドリングを `searcher.py` に含めること。
+2. **日本語短文字検索の trigram 挙動と Sudachi 分かち書き**:
+   * FTS5 `trigram` トークナイザーは3文字以上のサブストリングでインデックスを作成する。1〜2文字のクエリ（例: 「AI」「設定」）が入力された場合、FTS5の MATCH クエリではヒットしないため、BM25 検索をスキップしてベクトル検索単体でフォールバックする。
+   * 一方、`sudachi-*` トークナイザー使用時は `SplitMode.A` と `normalized_form()` により単語単位で `unicode61` FTS5 テーブルへ格納するため、1〜2文字の日本語キーワードでも正確に BM25 検索が可能となる。
 3. **リソースの適切なクローズ**:
    * SQLite接続はコンテキストマネージャ（`with` 構文）で管理し、CLI終了時にリークさせない。
 
@@ -432,14 +480,18 @@ DBファイルを削除または全テーブルをクリア（確認プロンプ
 2. **`test_database.py`**:
    * インメモリDB (`:memory:`) に対するスキーマ初期化が正常に行われること。
    * `sqlite-vec` 拡張が正常にロードされ、ベクトルの保存と近傍探索ができること。
-3. **`test_indexer.py`**:
+   * `meta` テーブルへのトークナイザー保存と、`force_reinit_fts` によるFTS再構築が動作すること。
+3. **`test_tokenizer.py`**:
+   * トークナイザーの自動検出優先順位（`full` → `core` → `small` → `trigram`）および明示指定時のバリデーションが正しく動作すること。
+   * Sudachi `SplitMode.A` と `normalized_form()` による分かち書き・句読点除外・FTSクエリ生成が正しく動作すること。
+4. **`test_indexer.py`**:
    * ファイル更新時に変更のあったファイルのみチャンクが再生成されること（差分更新）。
    * ファイル削除時に `ON DELETE CASCADE` でチャンクとFTS/vecインデックスが削除されること。
-4. **`test_searcher.py`**:
+5. **`test_searcher.py`**:
    * RRF計算が正しく順位に反比例したスコアを返すこと。
    * 日本語テキストのキーワード検索とベクトル検索がそれぞれ動作すること。
-5. **`test_cli.py`**:
-   * `typer.testing.CliRunner` を使用し、`index`, `query`, `query --json`, `status` コマンドの終了コードが0であること。
+6. **`test_cli.py`**:
+   * `typer.testing.CliRunner` を使用し、`index`, `query`, `query --json`, `status`, `prune` コマンドおよび `--tokenizer` オプションが正常に動作すること。
 
 ---
 

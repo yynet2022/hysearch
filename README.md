@@ -10,7 +10,7 @@ Lightweight, zero-daemon local hybrid search engine powered by SQLite and fastem
 
 - **Zero-Daemon / Zero-Container**: 外部サービスやDockerコンテナ不要。単一の SQLite データベースファイルのみで完結。
 - **Fast Startup / Low Resource**: PyTorch等を使わず、ONNX Runtime ベースの `fastembed` を採用し、高速なCLI起動を実現。
-- **日本語完全対応**: 外部形態素解析エンジンのインストールが不要な SQLite FTS5 `trigram` トークナイザーを採用。
+- **日本語形態素解析 & Trigram 両対応**: 追加インストール不要な SQLite FTS5 `trigram` トークナイザーを標準搭載しつつ、`SudachiPy`（`SplitMode.A` + 正規化）を導入すれば高精度な日本語分かち書き・表記揺れ吸収検索（1〜2文字単語のBM25一致を含む）に対応。
 - **Unix哲学 & エージェント親和性**: 人間向けのRichテーブル表示と、他CLIやLLMエージェントからパイプ処理しやすい `--json` 出力の両対応。
 - **RRF (Reciprocal Rank Fusion)**: キーワード検索の順位とベクトル類似度の順位を平滑化統合し、高精度な検索結果を提示。
 
@@ -34,8 +34,13 @@ cd hysearch
 python -m venv .venv
 source .venv/bin/activate  # Windows の場合: .venv\Scripts\Activate.ps1
 
-# パッケージおよび依存モジュールのインストール
+# 標準インストール (SQLite FTS5 trigram を使用)
 pip install -e .
+
+# 日本語の高精度分かち書き (SudachiPy) を使う場合 (辞書サイズ別に選択可能)
+pip install -e ".[sudachi]"        # 標準の core 辞書 (sudachidict_core)
+pip install -e ".[sudachi-small]"  # 軽量な small 辞書 (sudachidict_small)
+pip install -e ".[sudachi-full]"   # 固有名詞も豊富な full 辞書 (sudachidict_full)
 
 # 開発用ツール（pytest, ruff, mypy 等）も含める場合
 pip install -e ".[dev]"
@@ -48,9 +53,19 @@ pip install -e ".[dev]"
 ### 1. ドキュメントのインデックス作成・更新 (`index`)
 指定ディレクトリ配下のドキュメントおよびソースコード（デフォルト: `.md`, `.markdown`, `.txt`, `.py`, `.js`, `.ts`）を再帰的に走査し、インデックスを作成します。SHA-256 ハッシュによる差分検知を行い、変更のあったファイルのみ更新します。
 
+初回インデックス作成時、`--tokenizer` (`-t`) を省略すると、環境にインストールされているトークナイザーを **`sudachi-full` → `sudachi-core` → `sudachi-small` → `trigram`** の優先順で自動検出し、データベース内のメタデータに記録します。2回目以降の更新や検索 (`query`) では、記録されたトークナイザーが自動的に使用されます。
+
 ```bash
-# カレントディレクトリ配下をインデックス化 (デフォルト拡張子すべて)
+# カレントディレクトリ配下をインデックス化 (トークナイザーは初回に自動検出)
 hysearch index .
+
+# トークナイザーを明示的に指定してインデックス化 (-t / --tokenizer)
+# 指定可能な値: sudachi-full, sudachi-core, sudachi-small, sudachi, trigram
+hysearch index ./docs --tokenizer sudachi-core
+hysearch index ./docs -t trigram
+
+# 既存DBのトークナイザーを別のものに変更する場合は --force (-f) を併用
+hysearch index ./docs -t sudachi-full --force
 
 # チャンクサイズとオーバーラップを指定してインデックス化
 hysearch index ./docs --chunk-size 400 --overlap 80
@@ -104,7 +119,7 @@ hysearch query "アーキテクチャ" --json | jq .
 ```
 
 ### 3. インデックス状態の確認 (`status`)
-現在のインデックス状態（登録ファイル数、チャンク総数、DBファイルサイズ、最終更新時刻）を表示します。
+現在のインデックス状態（使用中のトークナイザー、登録ファイル数、チャンク総数、DBファイルサイズ、最終更新時刻）を表示します。
 
 ```bash
 hysearch status
