@@ -25,6 +25,22 @@ dev = [
     "ruff>=0.4.0",
     "mypy>=1.10.0",
 ]
+sudachi = [
+    "sudachipy>=0.6.8",
+    "sudachidict_core>=20240109",
+]
+sudachi-core = [
+    "sudachipy>=0.6.8",
+    "sudachidict_core>=20240109",
+]
+sudachi-small = [
+    "sudachipy>=0.6.8",
+    "sudachidict_small>=20240109",
+]
+sudachi-full = [
+    "sudachipy>=0.6.8",
+    "sudachidict_full>=20240109",
+]
 
 [project.scripts]
 hysearch = "hysearch.cli.main:app"
@@ -79,6 +95,7 @@ warn_unused_ignores = true
 module = [
     "sqlite_vec.*",
     "fastembed.*",
+    "sudachipy.*",
 ]
 ignore_missing_imports = true
 

@@ -401,3 +401,61 @@ def test_cli_prune_nonexistent_db(tmp_path: Path) -> None:
     res = runner.invoke(app, ["prune", "--db", str(missing_db)])
     assert res.exit_code == 1
     assert "does not exist" in " ".join(res.stdout.split())
+
+
+def test_cli_tokenizer_options_and_errors(tmp_path: Path) -> None:
+    """Verify CLI --tokenizer validation, conflict error, and query error."""
+    from unittest.mock import patch
+
+    docs_dir = tmp_path / "tok_docs"
+    docs_dir.mkdir()
+    (docs_dir / "doc.md").write_text("Test document", encoding="utf-8")
+    db_file = tmp_path / "tok.db"
+
+    # 1. Invalid tokenizer name -> exit code 1
+    res_bad = runner.invoke(
+        app,
+        ["index", str(docs_dir), "-t", "invalid_tok", "--db", str(db_file)],
+    )
+    assert res_bad.exit_code == 1
+    assert "Unsupported tokenizer" in " ".join(res_bad.stdout.split())
+
+    # 2. Index with trigram explicitly
+    res_ok = runner.invoke(
+        app,
+        ["index", str(docs_dir), "-t", "trigram", "--db", str(db_file)],
+    )
+    assert res_ok.exit_code == 0
+    assert "Tokenizer: trigram" in res_ok.stdout
+
+    # 3. Re-index with a different tokenizer without --force -> exit code 1
+    with patch(
+        "hysearch.cli.main.resolve_tokenizer", return_value="sudachi-core"
+    ):
+        res_conflict = runner.invoke(
+            app,
+            [
+                "index",
+                str(docs_dir),
+                "-t",
+                "sudachi-core",
+                "--db",
+                str(db_file),
+            ],
+        )
+    assert res_conflict.exit_code == 1
+    assert "already indexed with tokenizer" in " ".join(
+        res_conflict.stdout.split()
+    )
+
+    # 4. RuntimeError during query (e.g. missing Sudachi dict on query)
+    with patch(
+        "hysearch.cli.main.search",
+        side_effect=RuntimeError("Tokenizer 'sudachi-core' is not available"),
+    ):
+        res_q_err = runner.invoke(
+            app,
+            ["query", "Test", "--db", str(db_file)],
+        )
+    assert res_q_err.exit_code == 1
+    assert "not available" in " ".join(res_q_err.stdout.split())

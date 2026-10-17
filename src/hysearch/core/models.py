@@ -80,3 +80,7 @@ class IndexingStats(BaseModel):
     elapsed_seconds: float = Field(
         default=0.0, description="Total time taken for indexing in seconds"
     )
+    tokenizer: str = Field(
+        default="trigram",
+        description="Tokenizer name used for FTS indexing",
+    )

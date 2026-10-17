@@ -2,9 +2,11 @@
 
 import sqlite3
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
+from hysearch.core.database import create_connection, init_db
 from hysearch.core.embedder import DummyEmbedder
 from hysearch.core.indexer import (
     get_stored_file_hashes,
@@ -279,3 +281,37 @@ def test_prune_missing_files(
     total2, pruned2 = prune_missing_files(memory_db, dry_run=False)
     assert total2 == 1
     assert pruned2 == []
+
+
+def test_index_with_sudachi_tokenizer(
+    tmp_path: Path,
+    dummy_embedder: DummyEmbedder,
+) -> None:
+    """Verify indexing inserts space-separated tokens when using Sudachi."""
+    conn = create_connection(":memory:")
+    init_db(conn, tokenizer="sudachi-core")
+
+    doc = tmp_path / "jp.md"
+    doc.write_text("京都で検索する。", encoding="utf-8")
+
+    with (
+        patch(
+            "hysearch.core.indexer.resolve_tokenizer",
+            return_value="sudachi-core",
+        ),
+        patch(
+            "hysearch.core.indexer.format_fts_content",
+            return_value="京都 で 検索 する",
+        ),
+    ):
+        stats = index_directory(conn, tmp_path, dummy_embedder)
+
+    assert stats.tokenizer == "sudachi-core"
+    assert stats.files_indexed == 1
+
+    # chunks holds raw text, fts_chunks holds segmented text
+    raw_content = conn.execute("SELECT content FROM chunks;").fetchone()[0]
+    fts_content = conn.execute("SELECT content FROM fts_chunks;").fetchone()[0]
+    assert raw_content == "京都で検索する。"
+    assert fts_content == "京都 で 検索 する"
+    conn.close()

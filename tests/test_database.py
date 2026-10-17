@@ -3,14 +3,17 @@
 import sqlite3
 from pathlib import Path
 
+import pytest
 import sqlite_vec
 
-from hysearch.core.config import DEFAULT_EMBED_DIM
+from hysearch.core.config import DEFAULT_EMBED_DIM, TOKENIZER_TRIGRAM
 from hysearch.core.database import (
     SCHEMA_VERSION,
     create_connection,
     get_connection,
+    get_db_tokenizer,
     get_schema_version,
+    get_stored_tokenizer,
     init_db,
 )
 
@@ -186,4 +189,34 @@ def test_schema_version_and_migration() -> None:
     cursor.execute("PRAGMA table_info(files);")
     columns = {row[1] for row in cursor.fetchall()}
     assert "mtime" in columns
+    conn.close()
+
+
+def test_tokenizer_meta_and_reinit() -> None:
+    """Verify tokenizer metadata storage, legacy detection, and reinit."""
+    conn = create_connection(":memory:")
+    # Empty DB has no stored tokenizer; get_db_tokenizer defaults to trigram
+    assert get_stored_tokenizer(conn) is None
+    assert get_db_tokenizer(conn) == TOKENIZER_TRIGRAM
+
+    # Legacy DB (has fts_chunks but no meta table) -> detected as trigram
+    conn.execute("CREATE VIRTUAL TABLE fts_chunks USING fts5(content);")
+    assert get_stored_tokenizer(conn) == TOKENIZER_TRIGRAM
+
+    # Initialize with trigram (migrates legacy DB and records meta)
+    init_db(conn)
+    assert get_stored_tokenizer(conn) == TOKENIZER_TRIGRAM
+
+    # Attempting to change tokenizer without force raises ValueError
+    with pytest.raises(ValueError, match="already indexed with tokenizer"):
+        init_db(conn, tokenizer="sudachi-core", force_reinit_fts=False)
+
+    # Re-initializing with force_reinit_fts=True switches to unicode61 FTS
+    init_db(conn, tokenizer="sudachi-core", force_reinit_fts=True)
+    assert get_stored_tokenizer(conn) == "sudachi-core"
+    assert get_db_tokenizer(conn) == "sudachi-core"
+
+    # Calling init_db again with None or matching tokenizer preserves it
+    init_db(conn, tokenizer=None)
+    assert get_stored_tokenizer(conn) == "sudachi-core"
     conn.close()

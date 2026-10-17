@@ -35,3 +35,20 @@ SUPPORTED_EXTENSIONS: tuple[str, ...] = (
     ".js",
     ".ts",
 )
+
+# FTS トークナイザー設定
+TOKENIZER_TRIGRAM: str = "trigram"
+TOKENIZER_SUDACHI_SMALL: str = "sudachi-small"
+TOKENIZER_SUDACHI_CORE: str = "sudachi-core"
+TOKENIZER_SUDACHI_FULL: str = "sudachi-full"
+TOKENIZER_SUDACHI_AUTO: str = "sudachi"
+
+SUDACHI_DICT_PRIORITY: tuple[str, ...] = ("full", "core", "small")
+
+VALID_TOKENIZERS: tuple[str, ...] = (
+    TOKENIZER_SUDACHI_FULL,
+    TOKENIZER_SUDACHI_CORE,
+    TOKENIZER_SUDACHI_SMALL,
+    TOKENIZER_SUDACHI_AUTO,
+    TOKENIZER_TRIGRAM,
+)

@@ -17,9 +17,12 @@ from hysearch.core.config import (
     DEFAULT_CHUNK_OVERLAP,
     DEFAULT_CHUNK_SIZE,
     SUPPORTED_EXTENSIONS,
+    TOKENIZER_TRIGRAM,
 )
+from hysearch.core.database import get_db_tokenizer
 from hysearch.core.embedder import EmbedderProtocol, FastEmbedder
 from hysearch.core.models import IndexingStats
+from hysearch.core.tokenizer import format_fts_content, resolve_tokenizer
 
 PathLike = str | Path
 ProgressCallback = Callable[[int, int, Path], None]
@@ -80,6 +83,7 @@ def index_file(
     chunk_size: int = DEFAULT_CHUNK_SIZE,
     overlap: int = DEFAULT_CHUNK_OVERLAP,
     current_hash: str | None = None,
+    tokenizer: str | None = None,
 ) -> int:
     """Index or re-index a single document file.
 
@@ -90,10 +94,12 @@ def index_file(
         chunk_size: Target character count per chunk.
         overlap: Character overlap count.
         current_hash: Precomputed SHA-256 hex digest, or None to compute.
+        tokenizer: Optional active tokenizer name.
 
     Returns:
         int: Number of chunks created and stored for this file.
     """
+    active_tokenizer = tokenizer or get_db_tokenizer(conn)
     path_str = str(file_path.resolve())
     h = current_hash or compute_file_hash(file_path)
     mtime = file_path.stat().st_mtime
@@ -132,7 +138,7 @@ def index_file(
         chunk_texts = [c.content for c in chunks]
         embeddings = embedder.embed(chunk_texts)
 
-        # chunks テーブルおよび vec_chunks テーブルに挿入
+        # chunks テーブル、fts_chunks、および vec_chunks テーブルに挿入
         for chunk, embedding in zip(chunks, embeddings, strict=True):
             cursor.execute(
                 """
@@ -150,6 +156,14 @@ def index_file(
             )
             chunk_id = cursor.lastrowid
             assert chunk_id is not None
+
+            # Sudachi 等の場合は分かち書き済みテキストを fts_chunks に登録
+            if active_tokenizer != TOKENIZER_TRIGRAM:
+                fts_text = format_fts_content(chunk.content, active_tokenizer)
+                cursor.execute(
+                    "INSERT INTO fts_chunks (rowid, content) VALUES (?, ?);",
+                    (chunk_id, fts_text),
+                )
 
             # sqlite-vec に float32 ベクトルを登録
             serialized_vec = sqlite_vec.serialize_float32(embedding)
@@ -188,6 +202,7 @@ def index_directory(
         IndexingStats: Summary statistics of the indexing process.
     """
     start_time = time.perf_counter()
+    active_tokenizer = resolve_tokenizer(get_db_tokenizer(conn))
     active_embedder: EmbedderProtocol = (
         embedder if embedder is not None else FastEmbedder()
     )
@@ -197,7 +212,9 @@ def index_directory(
     stored_hashes = get_stored_file_hashes(conn)
 
     total_files = len(files)
-    stats = IndexingStats(files_scanned=total_files)
+    stats = IndexingStats(
+        files_scanned=total_files, tokenizer=active_tokenizer
+    )
 
     for idx, file_path in enumerate(files, start=1):
         if on_progress is not None:
@@ -221,6 +238,7 @@ def index_directory(
             chunk_size=chunk_size,
             overlap=overlap,
             current_hash=current_hash,
+            tokenizer=active_tokenizer,
         )
         stats.files_indexed += 1
         stats.chunks_created += created

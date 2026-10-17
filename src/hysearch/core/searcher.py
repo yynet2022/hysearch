@@ -19,9 +19,12 @@ from hysearch.core.config import (
     DEFAULT_RRF_K,
     DEFAULT_WEIGHT_BM25,
     DEFAULT_WEIGHT_VEC,
+    TOKENIZER_TRIGRAM,
 )
+from hysearch.core.database import get_db_tokenizer
 from hysearch.core.embedder import EmbedderProtocol, FastEmbedder
 from hysearch.core.models import SearchHit, SearchResponse
+from hysearch.core.tokenizer import build_fts_query, resolve_tokenizer
 from hysearch.utils.text import extract_snippet
 
 SearchMode = Literal["hybrid", "bm25", "vector"]
@@ -110,28 +113,19 @@ def get_filtered_chunk_ids(
     return [row[0] for row in cursor.fetchall()]
 
 
-def _clean_fts_query(query: str) -> str | None:
-    """Prepare a safe query string for SQLite FTS5 trigram tokenizer.
-
-    FTS5 trigram requires tokens of length 3 or more characters.
-    If the effective query string is shorter than 3 characters, return None
-    to indicate BM25 matching should be skipped.
+def _clean_fts_query(
+    query: str, tokenizer_name: str = TOKENIZER_TRIGRAM
+) -> str | None:
+    """Prepare a safe query string for SQLite FTS5 virtual table.
 
     Args:
         query: Raw user query string.
+        tokenizer_name: Active tokenizer name stored in the database.
 
     Returns:
         str | None: Formatted FTS query, or None if too short/invalid.
     """
-    stripped = query.strip()
-    # 空白を除いた長さが3文字未満なら trigram 検索不可
-    compact = "".join(stripped.split())
-    if len(compact) < 3:
-        return None
-
-    # ダブルクォートをエスケープしてフレーズクエリ化
-    escaped = stripped.replace('"', '""')
-    return f'"{escaped}"'
+    return build_fts_query(query, tokenizer_name=tokenizer_name)
 
 
 def search_bm25(
@@ -140,7 +134,7 @@ def search_bm25(
     limit: int = 50,
     target_ids: list[int] | None = None,
 ) -> list[int]:
-    """Execute BM25 keyword search using SQLite FTS5 trigram virtual table.
+    """Execute BM25 keyword search using SQLite FTS5 virtual table.
 
     Args:
         conn: Open SQLite connection.
@@ -154,7 +148,8 @@ def search_bm25(
     if target_ids is not None and not target_ids:
         return []
 
-    fts_query = _clean_fts_query(query)
+    tokenizer_name = resolve_tokenizer(get_db_tokenizer(conn))
+    fts_query = _clean_fts_query(query, tokenizer_name=tokenizer_name)
     if not fts_query:
         return []
 
