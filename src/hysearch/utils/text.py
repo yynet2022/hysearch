@@ -5,6 +5,45 @@ generation for search results display.
 """
 
 import re
+from datetime import datetime
+
+
+def parse_datetime_str(val: str, param_name: str = "date") -> datetime:
+    """Parse a date or datetime string into a datetime object.
+
+    Args:
+        val: Input date string.
+        param_name: Parameter name for error reporting.
+
+    Returns:
+        datetime: Parsed datetime instance.
+
+    Raises:
+        ValueError: If the date string cannot be parsed.
+    """
+    clean_val = val.strip()
+    try:
+        return datetime.fromisoformat(clean_val)
+    except ValueError:
+        pass
+
+    for fmt in (
+        "%Y/%m/%d",
+        "%Y/%m/%d %H:%M:%S",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y/%m",
+        "%Y-%m",
+        "%Y",
+    ):
+        try:
+            return datetime.strptime(clean_val, fmt)
+        except ValueError:
+            pass
+
+    raise ValueError(
+        f"Invalid date format for {param_name}: '{val}'. "
+        "Use YYYY-MM-DD or ISO 8601 format."
+    )
 
 
 def clean_text(text: str) -> str:

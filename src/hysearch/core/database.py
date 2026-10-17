@@ -8,7 +8,9 @@ and vector index), and reset the database.
 import sqlite3
 from collections.abc import Generator
 from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import sqlite_vec
 
@@ -270,3 +272,38 @@ def init_db(
 
         # スキーマバージョンを記録
         conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION};")
+
+
+def get_db_status(db_path: PathLike) -> dict[str, Any]:
+    """Retrieve index statistics and database file metadata.
+
+    Args:
+        db_path: Path to the SQLite database file.
+
+    Returns:
+        dict[str, Any]: Dictionary of status fields (Database Path, Tokenizer,
+            Files Indexed, Total Chunks, Database Size, Last Modified).
+    """
+    path = Path(db_path)
+    stat = path.stat()
+    size_kb = stat.st_size / 1024.0
+    mod_time = datetime.fromtimestamp(stat.st_mtime).strftime(
+        "%Y-%m-%d %H:%M:%S"
+    )
+
+    with get_connection(path) as conn:
+        init_db(conn)
+        active_tokenizer = get_db_tokenizer(conn)
+        file_count = conn.execute("SELECT COUNT(*) FROM files;").fetchone()[0]
+        chunk_count = conn.execute("SELECT COUNT(*) FROM chunks;").fetchone()[
+            0
+        ]
+
+    return {
+        "Database Path": str(path.resolve()),
+        "Tokenizer": active_tokenizer,
+        "Files Indexed": int(file_count),
+        "Total Chunks": int(chunk_count),
+        "Database Size": f"{size_kb:.2f} KB",
+        "Last Modified": mod_time,
+    }

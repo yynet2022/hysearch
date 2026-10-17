@@ -32,16 +32,19 @@ from hysearch.core.config import (
     DEFAULT_CHUNK_SIZE,
     DEFAULT_DB_PATH,
     DEFAULT_RRF_K,
+    DEFAULT_SERVER_HOST,
 )
 from hysearch.core.database import (
     get_connection,
-    get_db_tokenizer,
+    get_db_status,
     get_stored_tokenizer,
     init_db,
 )
 from hysearch.core.indexer import index_directory, prune_missing_files
 from hysearch.core.searcher import SearchMode, search
 from hysearch.core.tokenizer import resolve_tokenizer
+from hysearch.utils.text import parse_datetime_str
+from hysearch.web.runner import run_server
 
 app = typer.Typer(
     name="hysearch",
@@ -199,30 +202,11 @@ def parse_datetime_filter(val: str, param_name: str) -> datetime:
     Returns:
         datetime: Parsed datetime instance.
     """
-    clean_val = val.strip()
     try:
-        return datetime.fromisoformat(clean_val)
-    except ValueError:
-        pass
-
-    for fmt in (
-        "%Y/%m/%d",
-        "%Y/%m/%d %H:%M:%S",
-        "%Y-%m-%d %H:%M:%S",
-        "%Y/%m",
-        "%Y-%m",
-        "%Y",
-    ):
-        try:
-            return datetime.strptime(clean_val, fmt)
-        except ValueError:
-            pass
-
-    console.print(
-        f"[red]Error:[/] Invalid date format for {param_name}: '{val}'. "
-        "Use YYYY-MM-DD or ISO 8601 format."
-    )
-    raise typer.Exit(code=1)
+        return parse_datetime_str(val, param_name)
+    except ValueError as exc:
+        console.print(f"[red]Error:[/] {exc}")
+        raise typer.Exit(code=1) from exc
 
 
 @app.command(name="query")
@@ -396,28 +380,7 @@ def status_cmd(
             console.print(f"[yellow]Database '{db}' does not exist.[/]")
         return
 
-    stat = db.stat()
-    size_kb = stat.st_size / 1024.0
-    mod_time = datetime.fromtimestamp(stat.st_mtime).strftime(
-        "%Y-%m-%d %H:%M:%S"
-    )
-
-    with get_connection(db) as conn:
-        init_db(conn)
-        active_tokenizer = get_db_tokenizer(conn)
-        file_count = conn.execute("SELECT COUNT(*) FROM files;").fetchone()[0]
-        chunk_count = conn.execute("SELECT COUNT(*) FROM chunks;").fetchone()[
-            0
-        ]
-
-    status_data = {
-        "Database Path": str(db.resolve()),
-        "Tokenizer": active_tokenizer,
-        "Files Indexed": file_count,
-        "Total Chunks": chunk_count,
-        "Database Size": f"{size_kb:.2f} KB",
-        "Last Modified": mod_time,
-    }
+    status_data = get_db_status(db)
 
     if output_json:
         typer.echo(json.dumps(status_data, indent=2))
@@ -512,3 +475,55 @@ def prune_cmd(
             pruned_count=len(pruned_files),
             dry_run=dry_run,
         )
+
+
+@app.command(name="server")
+def server_cmd(
+    host: Annotated[
+        str,
+        typer.Option(
+            "--host",
+            "-H",
+            help="Host or IP address to bind the web server",
+        ),
+    ] = DEFAULT_SERVER_HOST,
+    port: Annotated[
+        int | None,
+        typer.Option(
+            "--port",
+            "-p",
+            help=(
+                "Port number to bind (default: auto-search starting at 8888)"
+            ),
+        ),
+    ] = None,
+    open_browser: Annotated[
+        bool,
+        typer.Option(
+            "--open/--no-open",
+            help="Automatically open the web browser on startup",
+        ),
+    ] = True,
+    db: Annotated[
+        Path,
+        typer.Option("--db", help="Path to SQLite database file"),
+    ] = DEFAULT_DB_PATH,
+) -> None:
+    """Start the local web server for browser-based status and search."""
+    if not db.exists():
+        console.print(
+            f"[red]Error:[/] Database file '{db}' does not exist. "
+            "Run 'hysearch index' first."
+        )
+        raise typer.Exit(code=1)
+
+    try:
+        run_server(
+            db_path=db,
+            host=host,
+            port=port,
+            open_browser=open_browser,
+        )
+    except (ValueError, RuntimeError) as exc:
+        console.print(f"[red]Error:[/] {exc}")
+        raise typer.Exit(code=1) from exc
