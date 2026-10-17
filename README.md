@@ -153,6 +153,21 @@ hysearch reset
 hysearch reset -y
 ```
 
+### 6. ブラウザ Web UI & サーバー起動 (`server`)
+FastAPI / Uvicorn によるローカル Web サーバーを起動し、ブラウザ上でインデックス状態（`status`）の確認や、パラメータ・フィルタ（`mode`, `top_k`, `rrf_k`, `path`, `glob`, `since`, `until`）を指定した対話的な繰り返し検索（`query`）を行えます。
+`--port` 省略時はデフォルトの `8888` から順に空きポートを自動探索し、起動と同時にブラウザを自動で開きます（`Ctrl+C` で停止）。`--port` を明示指定した場合、そのポートが使用中であればエラー終了します。
+
+```bash
+# デフォルト設定 (127.0.0.1:8888 から空きポートを自動探索してブラウザを起動)
+hysearch server
+
+# ホスト名やポート番号を明示指定 (--host / -H, --port / -p)
+hysearch server --host 0.0.0.0 --port 9000
+
+# ブラウザの自動起動を抑止 (--no-open)
+hysearch server --no-open
+```
+
 ---
 
 ## 検索アルゴリズム: RRF (Reciprocal Rank Fusion)

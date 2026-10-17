@@ -139,6 +139,8 @@ dependencies = [
     "sqlite-vec>=0.1.6",
     "fastembed>=0.4.0",
     "pydantic>=2.7.0",
+    "fastapi>=0.110.0",
+    "uvicorn>=0.29.0",
 ]
 
 [project.optional-dependencies]
@@ -163,6 +165,7 @@ dev = [
     "pytest-cov>=5.0.0",
     "ruff>=0.4.0",
     "mypy>=1.10.0",
+    "httpx>=0.27.0",
 ]
 
 [project.scripts]
@@ -455,6 +458,14 @@ Typerを使用して実装。全コマンドで `--db` オプション（デフ�
 #### 5. `hysearch reset`
 DBファイルを削除または全テーブルをクリア（確認プロンプト付き）。
 
+#### 6. `hysearch server`
+FastAPI / Uvicorn によるローカル Web サーバーを起動し、ブラウザ上で `status` 確認および対話的な `query` 検索を実行。
+* オプション:
+  * `--host` / `-H` (str, default: `"127.0.0.1"`): バインドするホスト名またはIPアドレス
+  * `--port` / `-p` (int | None, default: `None`): ポート番号（省略時は `8888` から順に空きポートを自動探索。明示指定時に使用中であればエラー終了）
+  * `--open` / `--no-open` (bool, default: `True`): サーバー起動時にブラウザを自動的に開くかどうか
+  * `--db` (Path, default: `./.hysearch.db`): データベースファイルパス
+
 ---
 
 ## 8. 実装における重要な注意点・落とし穴
@@ -492,6 +503,9 @@ DBファイルを削除または全テーブルをクリア（確認プロンプ
    * 日本語テキストのキーワード検索とベクトル検索がそれぞれ動作すること。
 6. **`test_cli.py`**:
    * `typer.testing.CliRunner` を使用し、`index`, `query`, `query --json`, `status`, `prune` コマンドおよび `--tokenizer` オプションが正常に動作すること。
+7. **`test_web.py`**:
+   * FastAPI `TestClient` を使用し、`GET /`, `GET /api/status`, `GET /api/query`（各種モード・フィルタ・エラー系）が正常に動作すること。
+   * ポート空き判定・自動インクリメント・明示ポート競合時のエラー終了・`hysearch server` CLI コマンドが正常に動作すること。
 
 ---
 

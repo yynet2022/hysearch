@@ -134,8 +134,16 @@ SQLite データベースには以下の5要素を構成しています。
 - `hybrid`, `bm25`, `vector` のモード切り替えに対応。
 
 ### 6.6 CLI & UI (`hysearch.cli`)
-- Typer による直感的なサブコマンド（`index`, `query`, `status`, `prune`, `reset`）。
+- Typer による直感的なサブコマンド（`index`, `query`, `status`, `prune`, `reset`, `server`）。
 - `index` コマンドにおける特定拡張子の指定（`--ext`）およびトークナイザー指定（`--tokenizer` / `-t`）。
 - `query` コマンドにおける多彩な検索フィルタ（`--path`, `--glob`, `--since`, `--until` 等）と柔軟な日時パース（ISO 8601, YYYY-MM-DD 等）。
 - `prune` コマンドにおける削除ファイルのリアルタイム都度通知とドライラン（`--dry-run`）。
 - Rich による洗練されたテーブル・パネル表示（ライト/ダーク両背景で見やすい配色）と、パイプ処理用の `--json` 出力。
+
+### 6.7 Web Server & Browser UI (`hysearch.web`)
+- FastAPI と Uvicorn による軽量ローカル Web サーバー（`hysearch server` コマンドで起動）。
+- 初回検索時に `FastEmbedder` インスタンスをメモリ内にキャッシュし、2回目以降の検索レスポンスを高速化。
+- デフォルトポート（`8888`）が使用中の場合は空きポートを自動探索してバインドし、`--port` 明示指定時はポート競合を即座に検知してエラー終了する安全なポート解決機構（`resolve_server_port`）。
+- サーバー起動と同時に標準ブラウザを自動で開く機能（`--open` / `--no-open`）。
+- シングルページ HTML UI（`/`）と REST エンドポイント（`/api/status`, `/api/query`）により、ブラウザ上でインデックス状態の確認および各種パラメータ・フィルタを用いた対話的な連続検索を提供。
+
