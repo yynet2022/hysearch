@@ -48,6 +48,49 @@ pip install -e ".[dev]"
 
 ---
 
+## 埋め込みモデル (FastEmbed) のキャッシュと Linux マルチユーザー環境での運用
+
+`hysearch` が使用する `fastembed` は、`pip install` 時には Python ライブラリのみをインストールし、初回実行時（`index` やベクトルを含む `query` 実行時）に Hugging Face Hub から量子化済み ONNX モデル（デフォルト: `Qdrant/paraphrase-multilingual-MiniLM-L12-v2-onnx-Q`、約 240 MB）を自動ダウンロードします。
+
+デフォルトでは、OS の一時ディレクトリ配下の `fastembed_cache`（Windows では `%TEMP%\fastembed_cache`、Linux / macOS では `/tmp/fastembed_cache`）にキャッシュが保存され、2回目以降はローカルキャッシュから読み込まれます。
+
+### Linux で複数ユーザーで共有する場合の注意点
+
+個人利用の環境ではデフォルト設定のままで問題ありませんが、Linux サーバー等で複数のユーザーが `hysearch` を使用する環境では、デフォルトの `/tmp/fastembed_cache` をそのまま使うと以下の問題が発生します。
+
+1. **パーミッション（権限）の衝突**: 最初に実行したユーザーの所有権と `umask` で `/tmp/fastembed_cache` が作成されるため、別ユーザーが実行した際に読み取り・書き込み権限エラー（`PermissionError`）が発生する場合があります。
+2. **`/tmp` の自動削除**: `systemd-tmpfiles-clean` による定期削除や OS 再起動によって `/tmp` 配下のファイルが消去されると、約 240 MB の再ダウンロードが発生し、権限問題も再発します。
+3. **メモリ（RAM）の圧迫**: `/tmp` が `tmpfs`（RAM ディスク）としてマウントされている環境では、モデルファイルが常時メモリを消費します。
+
+### Linux マルチユーザー環境での推奨設定（共有キャッシュの構築）
+
+`fastembed` はモデルファイル一式とメタデータ（`files_metadata.json`）がキャッシュ内に揃っていれば、2回目以降はロックファイルの作成や書き込みを一切行わず、**完全な読み取り専用（Read-Only）**で動作します。
+そのため、管理者が永続的なディレクトリにモデルを事前配置し、環境変数 `FASTEMBED_CACHE_PATH` で共有する運用を推奨します。
+
+```bash
+# 1. 永続的な共有キャッシュディレクトリを作成
+sudo mkdir -p /var/cache/fastembed
+
+# 2. 管理者権限でデフォルトモデルを事前ダウンロード
+sudo env FASTEMBED_CACHE_PATH=/var/cache/fastembed \
+  python3 -c "from fastembed import TextEmbedding; TextEmbedding('sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2')"
+
+# 3. 全ユーザーが読み取れるようにパーミッションを設定 (Read-Only)
+sudo chmod -R a+rX /var/cache/fastembed
+
+# 4. 全ユーザーの環境変数を設定 (例: /etc/profile.d/hysearch.sh に配置)
+sudo tee /etc/profile.d/hysearch.sh << 'EOF'
+export FASTEMBED_CACHE_PATH="/var/cache/fastembed"
+# 外部ネットワーク通信を完全に抑止したいオフライン環境等では以下も有効化
+# export HF_HUB_OFFLINE=1
+EOF
+sudo chmod 644 /etc/profile.d/hysearch.sh
+```
+
+この設定により、ディスク容量の重複消費を防げるだけでなく、Linux カーネルのページキャッシュ上で同じ ONNX モデルファイルが全ユーザー間で共有されるため、メモリ効率と起動速度も向上します。
+
+---
+
 ## 使い方 (CLI コマンド)
 
 ### 1. ドキュメントのインデックス作成・更新 (`index`)
