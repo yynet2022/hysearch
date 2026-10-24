@@ -239,7 +239,7 @@ addopts = "-ra -q --cov=hysearch --cov-report=term-missing"
 DBには、DB設定メタデータ（`meta`）、ファイル同期メタデータ（`files`）、元データ実体（`chunks`）、FTS5全文検索テーブル（`fts_chunks`）、`sqlite-vec`仮想テーブル（`vec_chunks`）を構成する。
 
 ```sql
--- 0. DBメタデータ管理（使用トークナイザー等の記録）
+-- 0. DBメタデータ管理（使用トークナイザー・埋め込みモデル名・次元数等の記録）
 CREATE TABLE IF NOT EXISTS meta (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -301,6 +301,7 @@ END;
 
 -- 5. ベクトル検索テーブル (sqlite-vec)
 -- デフォルトモデル: sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2 (384次元)
+-- 選択されたモデルに応じて float[384], float[768], float[1024] で初期化される
 CREATE VIRTUAL TABLE IF NOT EXISTS vec_chunks USING vec0(
     id INTEGER PRIMARY KEY,
     embedding float[384]
@@ -310,7 +311,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vec_chunks USING vec0(
 ### 5.2 スキーマバージョニングと自動マイグレーション
 SQLite の `PRAGMA user_version` を用いてスキーマバージョンを管理する（現行バージョン: `2`）。
 * `user_version = 0`（初期バージョン）からの移行時、`files` テーブルに `mtime` カラムが存在しない場合は `ALTER TABLE files ADD COLUMN mtime REAL NOT NULL DEFAULT 0.0;` を自動実行してマイグレーションを行う。
-* `user_version < 2` からの移行時、`meta` テーブルを作成し、既存の `fts_chunks` テーブルがある場合は `tokenizer = 'trigram'` として記録する。
+* `user_version < 2` からの移行時、`meta` テーブルを作成し、既存の `fts_chunks` テーブルがある場合は `tokenizer = 'trigram'` として記録する。また、既存の `vec_chunks` テーブルがある場合は `embed_model = 'sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2'`, `embed_dim = '384'` として記録する。
 * `get_schema_version(conn)` により現在のスキーマバージョンを取得可能。
 
 ### 5.3 sqlite-vec 接続要件
@@ -366,6 +367,8 @@ class IndexingStats(BaseModel):
     chunks_created: int = 0
     elapsed_seconds: float = 0.0
     tokenizer: str = "trigram"
+    embed_model: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+    embed_dim: int = 384
 ```
 
 ### 6.2 `src/hysearch/core/chunker.py`
@@ -378,6 +381,13 @@ class IndexingStats(BaseModel):
 ### 6.3 `src/hysearch/core/embedder.py`
 * `fastembed.TextEmbedding` をラップする。
 * デフォルトモデル: `"sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"` (次元数: 384)
+* 選択可能なモデル一覧 (`SUPPORTED_EMBED_MODELS`):
+  * `"sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"` (384次元 / デフォルト)
+  * `"sentence-transformers/paraphrase-multilingual-mpnet-base-v2"` (768次元)
+  * `"Qwen/Qwen3-Embedding-0.6B-Q"` (1024次元)
+  * `"google/embeddinggemma-300m"` (768次元)
+* `resolve_embed_model(requested)` により指定モデル名の検証および対応次元数の解決を行う。
+* 文書チャンクの埋め込み生成（`embed`）には `model.passage_embed()` を、検索クエリの埋め込み生成（`embed_query`）には `model.query_embed()` を使用する。
 * テスト実行時は、重いONNXモデルをロードせずランダムまたは固定値ベクトルを返す `DummyEmbedder` に差し替え可能な抽象プロトコル (`EmbedderProtocol`) を定義すること。
 
 ### 6.4 `src/hysearch/core/tokenizer.py`
@@ -431,6 +441,7 @@ Typerを使用して実装。全コマンドで `--db` オプション（デフ�
   * `--force` / `-f` (bool, default: False) - ハッシュ差分を無視して全再構築
   * `--ext` / `-e` (list[str] | None, default: None) - インデックス対象の拡張子（指定した場合デフォルトを上書き。既存の他拡張子データはDBに保持）
   * `--tokenizer` / `-t` (str | None, default: None) - FTSトークナイザーの指定（`sudachi-full`, `sudachi-core`, `sudachi-small`, `sudachi`, `trigram`。省略時は初回に自動検出しDBに記録。既存DBと異なるトークナイザーに変更する場合は `--force` が必須）
+  * `--model` / `-m` (str | None, default: None) - 埋め込みモデルの指定（`sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2`, `sentence-transformers/paraphrase-multilingual-mpnet-base-v2`, `Qwen/Qwen3-Embedding-0.6B-Q`, `google/embeddinggemma-300m`。省略時は初回にデフォルトモデルを選択し、モデル名と次元数をDBの `meta` テーブルに記録。既存DBと異なるモデルに変更する場合は `--force` が必須）
 
 #### 2. `hysearch query [QUERY]`
 自然言語またはキーワードでハイブリッド検索を実行。
@@ -447,7 +458,7 @@ Typerを使用して実装。全コマンドで `--db` オプション（デフ�
   * `--json` (bool, default: False): 結果をJSONで標準出力（パイプ処理用）
 
 #### 3. `hysearch status`
-現在のインデックス状態を表示（使用トークナイザー、ファイル数、チャンク総数、DBファイルサイズ、最終更新時刻）。
+現在のインデックス状態を表示（使用トークナイザー、使用埋め込みモデル、埋め込み次元数、ファイル数、チャンク総数、DBファイルサイズ、最終更新時刻）。
 
 #### 4. `hysearch prune`
 ディスク上から削除・移動されたファイルを検出し、データベースから安全に除外。
@@ -489,10 +500,11 @@ FastAPI / Uvicorn によるローカル Web サーバーを起動し、ブラウ
 1. **`test_chunker.py`**:
    * 通常テキストが適切なサイズとオーバーラップで分割されること。
    * 同一内容のテキストに対して同一のハッシュ値が返ること。
+   * `resolve_embed_model` によるモデル名・次元数の解決と、`FastEmbedder` の `passage_embed` / `query_embed` 呼び出しが正常に動作すること。
 2. **`test_database.py`**:
    * インメモリDB (`:memory:`) に対するスキーマ初期化が正常に行われること。
    * `sqlite-vec` 拡張が正常にロードされ、ベクトルの保存と近傍探索ができること。
-   * `meta` テーブルへのトークナイザー保存と、`force_reinit_fts` によるFTS再構築が動作すること。
+   * `meta` テーブルへのトークナイザーおよび埋め込みモデル・次元数の保存と、`force_reinit_fts` / `force_reinit_vec` によるFTS・ベクトルテーブルの再構築が動作すること。
 3. **`test_tokenizer.py`**:
    * トークナイザーの自動検出優先順位（`full` → `core` → `small` → `trigram`）および明示指定時のバリデーションが正しく動作すること。
    * Sudachi `SplitMode.A` と `normalized_form()` による分かち書き・句読点除外・FTSクエリ生成が正しく動作すること。
@@ -503,7 +515,7 @@ FastAPI / Uvicorn によるローカル Web サーバーを起動し、ブラウ
    * RRF計算が正しく順位に反比例したスコアを返すこと。
    * 日本語テキストのキーワード検索とベクトル検索がそれぞれ動作すること。
 6. **`test_cli.py`**:
-   * `typer.testing.CliRunner` を使用し、`index`, `query`, `query --json`, `status`, `prune` コマンドおよび `--tokenizer` オプションが正常に動作すること。
+   * `typer.testing.CliRunner` を使用し、`index`, `query`, `query --json`, `status`, `prune` コマンドおよび `--tokenizer` / `--model` オプションが正常に動作すること。
 7. **`test_web.py`**:
    * FastAPI `TestClient` を使用し、`GET /`, `GET /api/status`, `GET /api/query`（各種モード・フィルタ・エラー系）が正常に動作すること。
    * ポート空き判定・自動インクリメント・明示ポート競合時のエラー終了・`hysearch server` CLI コマンドが正常に動作すること。

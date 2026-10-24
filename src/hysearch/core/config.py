@@ -14,8 +14,28 @@ DEFAULT_EMBED_MODEL: str = (
     "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 )
 
-# 埋め込みベクトルの次元数
+# 埋め込みベクトルの次元数 (デフォルト)
 DEFAULT_EMBED_DIM: int = 384
+
+# 選択可能なテキスト埋め込みモデル定数
+EMBED_MODEL_MINILM: str = (
+    "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+)
+EMBED_MODEL_MPNET: str = (
+    "sentence-transformers/paraphrase-multilingual-mpnet-base-v2"
+)
+EMBED_MODEL_QWEN3: str = "Qwen/Qwen3-Embedding-0.6B-Q"
+EMBED_MODEL_GEMMA: str = "google/embeddinggemma-300m"
+
+# サポートする埋め込みモデル名と次元数のマッピング
+SUPPORTED_EMBED_MODELS: dict[str, int] = {
+    EMBED_MODEL_MINILM: 384,
+    EMBED_MODEL_MPNET: 768,
+    EMBED_MODEL_QWEN3: 1024,
+    EMBED_MODEL_GEMMA: 768,
+}
+
+VALID_EMBED_MODELS: tuple[str, ...] = tuple(SUPPORTED_EMBED_MODELS.keys())
 
 # チャンキング設定
 DEFAULT_CHUNK_SIZE: int = 500

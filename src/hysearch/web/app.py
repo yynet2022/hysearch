@@ -4,6 +4,7 @@ This module provides endpoints for serving the single-page browser UI,
 inspecting database status, and running hybrid/BM25/vector search queries.
 """
 
+import sqlite3
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +15,8 @@ from hysearch.core.config import DEFAULT_DB_PATH, DEFAULT_RRF_K
 from hysearch.core.database import (
     PathLike,
     get_connection,
+    get_db_embed_dim,
+    get_db_embed_model,
     get_db_status,
     init_db,
 )
@@ -46,10 +49,13 @@ def create_app(
     resolved_db = Path(db_path)
     state: dict[str, EmbedderProtocol | None] = {"embedder": embedder}
 
-    def get_cached_embedder() -> EmbedderProtocol:
+    def get_cached_embedder(conn: sqlite3.Connection) -> EmbedderProtocol:
         cached = state["embedder"]
         if cached is None:
-            cached = FastEmbedder()
+            cached = FastEmbedder(
+                model_name=get_db_embed_model(conn),
+                dimension=get_db_embed_dim(conn),
+            )
             state["embedder"] = cached
         return cached
 
@@ -139,12 +145,12 @@ def create_app(
             )
 
         search_mode: SearchMode = mode  # type: ignore[assignment]
-        active_embedder = (
-            get_cached_embedder() if search_mode != "bm25" else None
-        )
 
         with get_connection(resolved_db) as conn:
             init_db(conn)
+            active_embedder = (
+                get_cached_embedder(conn) if search_mode != "bm25" else None
+            )
             try:
                 return search(
                     conn=conn,

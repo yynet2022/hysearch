@@ -8,7 +8,42 @@ import hashlib
 import math
 from typing import Protocol
 
-from hysearch.core.config import DEFAULT_EMBED_DIM, DEFAULT_EMBED_MODEL
+from hysearch.core.config import (
+    DEFAULT_EMBED_DIM,
+    DEFAULT_EMBED_MODEL,
+    SUPPORTED_EMBED_MODELS,
+    VALID_EMBED_MODELS,
+)
+
+
+def resolve_embed_model(requested: str | None = None) -> tuple[str, int]:
+    """Resolve and validate the embedding model name and its vector dimension.
+
+    Args:
+        requested: Optional user-specified embedding model name. If None,
+            defaults to DEFAULT_EMBED_MODEL.
+
+    Returns:
+        tuple[str, int]: Canonical model name and vector dimension.
+
+    Raises:
+        ValueError: If the requested model name is not supported.
+    """
+    if requested is None:
+        return DEFAULT_EMBED_MODEL, DEFAULT_EMBED_DIM
+
+    stripped = requested.strip()
+    if stripped in SUPPORTED_EMBED_MODELS:
+        return stripped, SUPPORTED_EMBED_MODELS[stripped]
+
+    lower_map = {k.lower(): (k, v) for k, v in SUPPORTED_EMBED_MODELS.items()}
+    if stripped.lower() in lower_map:
+        return lower_map[stripped.lower()]
+
+    valid_str = ", ".join(VALID_EMBED_MODELS)
+    raise ValueError(
+        f"Unsupported embedding model '{requested}'. Choose from: {valid_str}."
+    )
 
 
 class EmbedderProtocol(Protocol):
@@ -48,16 +83,20 @@ class FastEmbedder:
     def __init__(
         self,
         model_name: str = DEFAULT_EMBED_MODEL,
-        dimension: int = DEFAULT_EMBED_DIM,
+        dimension: int | None = None,
     ) -> None:
         """Initialize FastEmbedder with model configuration.
 
         Args:
             model_name: Name of the FastEmbed model.
-            dimension: Expected vector dimension.
+            dimension: Expected vector dimension (auto-resolved if None).
         """
         self.model_name = model_name
-        self._dimension = dimension
+        self._dimension = (
+            dimension
+            if dimension is not None
+            else SUPPORTED_EMBED_MODELS.get(model_name, DEFAULT_EMBED_DIM)
+        )
         self._model_instance: object | None = None
 
     @property
@@ -74,7 +113,7 @@ class FastEmbedder:
         return self._model_instance
 
     def embed(self, texts: list[str]) -> list[list[float]]:
-        """Generate embeddings for a list of texts using FastEmbed.
+        """Generate passage embeddings for a list of texts using FastEmbed.
 
         Args:
             texts: List of strings to embed.
@@ -85,12 +124,12 @@ class FastEmbedder:
         if not texts:
             return []
         model = self._get_model()
-        # FastEmbed のジェネレータから numpy 配列を取得し float リストに変換
-        raw_embeddings = model.embed(texts)  # type: ignore[attr-defined]
+        # FastEmbed の passage_embed から numpy 配列を取得し float リストに変換
+        raw_embeddings = model.passage_embed(texts)  # type: ignore[attr-defined]
         return [vec.tolist() for vec in raw_embeddings]
 
     def embed_query(self, query: str) -> list[float]:
-        """Generate an embedding vector for a query string.
+        """Generate a query embedding vector for a search query string.
 
         Args:
             query: Search query text.
@@ -98,8 +137,10 @@ class FastEmbedder:
         Returns:
             list[float]: Query embedding vector.
         """
-        res = self.embed([query])
-        return res[0]
+        model = self._get_model()
+        # FastEmbed の query_embed から単一クエリのベクトルを取得
+        raw_embeddings = model.query_embed(query)  # type: ignore[attr-defined]
+        return next(vec.tolist() for vec in raw_embeddings)
 
 
 class DummyEmbedder:
@@ -107,16 +148,23 @@ class DummyEmbedder:
 
     def __init__(
         self,
-        dimension: int = DEFAULT_EMBED_DIM,
+        dimension: int | None = None,
         fixed_value: float | None = None,
+        model_name: str = DEFAULT_EMBED_MODEL,
     ) -> None:
         """Initialize DummyEmbedder.
 
         Args:
             dimension: Dimensionality of generated vectors.
             fixed_value: Optional constant float value for every dimension.
+            model_name: Model name associated with this embedder instance.
         """
-        self._dimension = dimension
+        self.model_name = model_name
+        self._dimension = (
+            dimension
+            if dimension is not None
+            else SUPPORTED_EMBED_MODELS.get(model_name, DEFAULT_EMBED_DIM)
+        )
         self._fixed_value = fixed_value
 
     @property

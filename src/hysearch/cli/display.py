@@ -27,6 +27,8 @@ def print_indexing_stats(stats: IndexingStats) -> None:
         f"[bold yellow]Files Skipped:[/] {stats.files_skipped}\n"
         f"[bold magenta]Chunks Created:[/] {stats.chunks_created}\n"
         f"[bold blue]Tokenizer:[/] {stats.tokenizer}\n"
+        f"[bold blue]Embedding Model:[/] {stats.embed_model} "
+        f"({stats.embed_dim}d)\n"
         f"[bold]Elapsed Time:[/] {stats.elapsed_seconds:.3f} s"
     )
     panel = Panel(text, title="Indexing Complete", expand=False)

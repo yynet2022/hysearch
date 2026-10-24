@@ -71,8 +71,8 @@ $$RRF\_Score(d) = \sum_{m \in \{BM25, Vec\}} \frac{w_m}{k + rank_m(d)}$$
 SQLite データベースには以下の5要素を構成しています。
 
 1. **`meta` テーブル**: データベース全体の設定メタデータ管理。
-   - `key`: 設定キー（例: `'tokenizer'`）
-   - `value`: 設定値（`'sudachi-full'`, `'sudachi-core'`, `'sudachi-small'`, `'trigram'` 等）
+   - `key`: 設定キー（`'tokenizer'`, `'embed_model'`, `'embed_dim'`）
+   - `value`: 設定値（トークナイザー名、使用中の埋め込みモデル名、ベクトル次元数 等）
 
 2. **`files` テーブル**: ファイル単位の同期メタデータ（差分検知用）。
    - `id`: 主キー
@@ -95,10 +95,10 @@ SQLite データベースには以下の5要素を構成しています。
 
 5. **`vec_chunks` 仮想テーブル (sqlite-vec `vec0`)**: ベクトル類似度インデックス。
    - `id`: 主キー（`chunks(id)` と対応）
-   - `embedding`: float[384] 次元埋め込みベクトル
+   - `embedding`: 選択された埋め込みモデルに応じた次元数（デフォルト `float[384]`、モデルにより `float[768]` または `float[1024]`）の埋め込みベクトル
    - `chunks_ad_vec` トリガーにより `chunks` レコード削除時に自動クリーンアップ。
 
-また、SQLite の `PRAGMA user_version` を用いたスキーマバージョニング（現行: バージョン `2`）および旧スキーマからの自動マイグレーション機構（`mtime` カラム追加・`meta` テーブル初期化）を備えています。
+また、SQLite の `PRAGMA user_version` を用いたスキーマバージョニング（現行: バージョン `2`）および旧スキーマからの自動マイグレーション機構（`mtime` カラム追加・`meta` テーブルへの `tokenizer` / `embed_model` / `embed_dim` 初期化）を備えています。
 
 ---
 
@@ -111,7 +111,12 @@ SQLite データベースには以下の5要素を構成しています。
 - ファイル全体の SHA-256 ハッシュを計算し、未更新ファイルはスキップ。
 
 ### 6.2 Embedder (`hysearch.core.embedder`)
-- `FastEmbedder`: `fastembed.TextEmbedding`（ONNX Runtime）による高速推論。デフォルトモデルは多言語対応の `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2`（384次元）。
+- `FastEmbedder`: `fastembed.TextEmbedding`（ONNX Runtime）による高速推論。文書チャンクの埋め込み生成には `model.passage_embed()` を、検索クエリの埋め込み生成には `model.query_embed()` を使用。
+- 選択可能な埋め込みモデル（`--model` / `-m` オプションで選択可能。初回作成時に `meta` テーブルへモデル名と次元数を記録し、以降の更新・検索で自動参照）:
+  - `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2`（384次元 / デフォルト）
+  - `sentence-transformers/paraphrase-multilingual-mpnet-base-v2`（768次元）
+  - `Qwen/Qwen3-Embedding-0.6B-Q`（1024次元）
+  - `google/embeddinggemma-300m`（768次元）
 - `DummyEmbedder`: テスト時にミリ秒単位で決定論的ベクトルを生成するモック。
 
 ### 6.3 Tokenizer (`hysearch.core.tokenizer`)
@@ -123,7 +128,7 @@ SQLite データベースには以下の5要素を構成しています。
 - 対象ディレクトリ配下のドキュメントおよびソースコード（デフォルト: `.md`, `.markdown`, `.txt`, `.py`, `.js`, `.ts`）を再帰走査。
 - `--ext` オプション指定時は指定された拡張子のみを対象に走査（既存の他拡張子レコードはDB内に保持）。
 - 差分検知により変更があったファイルのみ再インデックス。
-- `--force` オプションで全ドキュメントの再構築（および `--tokenizer` 変更時の FTS テーブル再初期化）をサポート。
+- `--force` オプションで全ドキュメントの再構築（および `--tokenizer` 変更時の FTS テーブル再初期化、`--model` 変更時のベクトルテーブル再初期化）をサポート。
 - 存在しなくなったファイルを検知し、外部キー制約のカスケードとトリガーにより関連全データを安全に連動削除する `prune_missing_files` を提供。
 
 ### 6.5 Searcher (`hysearch.core.searcher`)
@@ -135,14 +140,14 @@ SQLite データベースには以下の5要素を構成しています。
 
 ### 6.6 CLI & UI (`hysearch.cli`)
 - Typer による直感的なサブコマンド（`index`, `query`, `status`, `prune`, `reset`, `server`）。
-- `index` コマンドにおける特定拡張子の指定（`--ext`）およびトークナイザー指定（`--tokenizer` / `-t`）。
+- `index` コマンドにおける特定拡張子の指定（`--ext`）、トークナイザー指定（`--tokenizer` / `-t`）、および埋め込みモデル指定（`--model` / `-m`）。
 - `query` コマンドにおける多彩な検索フィルタ（`--path`, `--glob`, `--since`, `--until` 等）と柔軟な日時パース（ISO 8601, YYYY-MM-DD 等）。
 - `prune` コマンドにおける削除ファイルのリアルタイム都度通知とドライラン（`--dry-run`）。
 - Rich による洗練されたテーブル・パネル表示（ライト/ダーク両背景で見やすい配色）と、パイプ処理用の `--json` 出力。
 
 ### 6.7 Web Server & Browser UI (`hysearch.web`)
 - FastAPI と Uvicorn による軽量ローカル Web サーバー（`hysearch server` コマンドで起動）。
-- 初回検索時に `FastEmbedder` インスタンスをメモリ内にキャッシュし、2回目以降の検索レスポンスを高速化。
+- 初回検索時に DB の `meta` テーブルに記録された埋め込みモデル・次元数を読み取って `FastEmbedder` インスタンスをメモリ内にキャッシュし、2回目以降の検索レスポンスを高速化。
 - デフォルトポート（`8888`）が使用中の場合は空きポートを自動探索してバインドし、`--port` 明示指定時はポート競合を即座に検知してエラー終了する安全なポート解決機構（`resolve_server_port`）。
 - サーバー起動と同時に標準ブラウザを自動で開く機能（`--open` / `--no-open`）。
 - シングルページ HTML UI（`/`）と REST エンドポイント（`/api/status`, `/api/query`）により、ブラウザ上でインデックス状態の確認および各種パラメータ・フィルタを用いた対話的な連続検索を提供。

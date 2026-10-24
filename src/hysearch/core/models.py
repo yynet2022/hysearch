@@ -6,6 +6,8 @@ and search pipelines.
 
 from pydantic import BaseModel, Field
 
+from hysearch.core.config import DEFAULT_EMBED_DIM, DEFAULT_EMBED_MODEL
+
 
 class Chunk(BaseModel):
     """Represents a chunk of text extracted from a document."""
@@ -83,4 +85,12 @@ class IndexingStats(BaseModel):
     tokenizer: str = Field(
         default="trigram",
         description="Tokenizer name used for FTS indexing",
+    )
+    embed_model: str = Field(
+        default=DEFAULT_EMBED_MODEL,
+        description="Embedding model name used for vector indexing",
+    )
+    embed_dim: int = Field(
+        default=DEFAULT_EMBED_DIM,
+        description="Dimension of embedding vectors",
     )

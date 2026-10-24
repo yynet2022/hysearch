@@ -21,7 +21,11 @@ from hysearch.core.config import (
     DEFAULT_WEIGHT_VEC,
     TOKENIZER_TRIGRAM,
 )
-from hysearch.core.database import get_db_tokenizer
+from hysearch.core.database import (
+    get_db_embed_dim,
+    get_db_embed_model,
+    get_db_tokenizer,
+)
 from hysearch.core.embedder import EmbedderProtocol, FastEmbedder
 from hysearch.core.models import SearchHit, SearchResponse
 from hysearch.core.tokenizer import build_fts_query, resolve_tokenizer
@@ -337,10 +341,6 @@ def search(
             execution_time_ms=round(elapsed, 2),
         )
 
-    active_embedder: EmbedderProtocol = (
-        embedder if embedder is not None else FastEmbedder()
-    )
-
     candidate_limit = max(top_k * 5, 50)
     bm25_ids: list[int] = []
     vec_ids: list[int] = []
@@ -351,6 +351,14 @@ def search(
         )
 
     if mode in ("hybrid", "vector"):
+        active_embedder: EmbedderProtocol = (
+            embedder
+            if embedder is not None
+            else FastEmbedder(
+                model_name=get_db_embed_model(conn),
+                dimension=get_db_embed_dim(conn),
+            )
+        )
         vec_ids = search_vector(
             conn,
             query,

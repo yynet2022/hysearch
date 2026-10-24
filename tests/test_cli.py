@@ -459,3 +459,92 @@ def test_cli_tokenizer_options_and_errors(tmp_path: Path) -> None:
         )
     assert res_q_err.exit_code == 1
     assert "not available" in " ".join(res_q_err.stdout.split())
+
+
+def test_cli_model_options_and_errors(tmp_path: Path) -> None:
+    """Verify CLI --model validation, conflict error, and force re-index."""
+    docs_dir = tmp_path / "model_docs"
+    docs_dir.mkdir()
+    (docs_dir / "doc.md").write_text(
+        "Document for embedding model CLI testing.", encoding="utf-8"
+    )
+    db_file = tmp_path / "model.db"
+
+    # 1. Invalid model name -> exit code 1
+    res_bad = runner.invoke(
+        app,
+        ["index", str(docs_dir), "-m", "invalid/model", "--db", str(db_file)],
+    )
+    assert res_bad.exit_code == 1
+    assert "Unsupported embedding model" in " ".join(res_bad.stdout.split())
+
+    # 2. Index with Qwen/Qwen3-Embedding-0.6B-Q explicitly (1024d)
+    res_qwen = runner.invoke(
+        app,
+        [
+            "index",
+            str(docs_dir),
+            "-m",
+            "Qwen/Qwen3-Embedding-0.6B-Q",
+            "--db",
+            str(db_file),
+        ],
+    )
+    assert res_qwen.exit_code == 0
+    assert "1024d" in " ".join(res_qwen.stdout.split())
+
+    res_status1 = runner.invoke(
+        app, ["status", "--json", "--db", str(db_file)]
+    )
+    assert res_status1.exit_code == 0
+    status1 = json.loads(res_status1.stdout)
+    assert status1["Embedding Model"] == "Qwen/Qwen3-Embedding-0.6B-Q"
+    assert status1["Embedding Dim"] == 1024
+
+    # 3. Re-index with a different model without --force -> exit code 1
+    res_conflict = runner.invoke(
+        app,
+        [
+            "index",
+            str(docs_dir),
+            "-m",
+            "google/embeddinggemma-300m",
+            "--db",
+            str(db_file),
+        ],
+    )
+    assert res_conflict.exit_code == 1
+    assert "already indexed with embedding model" in " ".join(
+        res_conflict.stdout.split()
+    )
+
+    # 4. Re-index with a different model with --force -> exit code 0 (768d)
+    res_force = runner.invoke(
+        app,
+        [
+            "index",
+            str(docs_dir),
+            "-m",
+            "google/embeddinggemma-300m",
+            "--force",
+            "--db",
+            str(db_file),
+        ],
+    )
+    assert res_force.exit_code == 0
+    assert "768d" in " ".join(res_force.stdout.split())
+
+    res_status2 = runner.invoke(
+        app, ["status", "--json", "--db", str(db_file)]
+    )
+    status2 = json.loads(res_status2.stdout)
+    assert status2["Embedding Model"] == "google/embeddinggemma-300m"
+    assert status2["Embedding Dim"] == 768
+
+    # 5. Query against the 768d database automatically uses stored model/dim
+    res_query = runner.invoke(
+        app,
+        ["query", "embedding", "--mode", "vector", "--db", str(db_file)],
+    )
+    assert res_query.exit_code == 0
+    assert "1 hits" in res_query.stdout

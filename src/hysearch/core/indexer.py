@@ -19,7 +19,11 @@ from hysearch.core.config import (
     SUPPORTED_EXTENSIONS,
     TOKENIZER_TRIGRAM,
 )
-from hysearch.core.database import get_db_tokenizer
+from hysearch.core.database import (
+    get_db_embed_dim,
+    get_db_embed_model,
+    get_db_tokenizer,
+)
 from hysearch.core.embedder import EmbedderProtocol, FastEmbedder
 from hysearch.core.models import IndexingStats
 from hysearch.core.tokenizer import format_fts_content, resolve_tokenizer
@@ -203,8 +207,12 @@ def index_directory(
     """
     start_time = time.perf_counter()
     active_tokenizer = resolve_tokenizer(get_db_tokenizer(conn))
+    active_model = get_db_embed_model(conn)
+    active_dim = get_db_embed_dim(conn)
     active_embedder: EmbedderProtocol = (
-        embedder if embedder is not None else FastEmbedder()
+        embedder
+        if embedder is not None
+        else FastEmbedder(model_name=active_model, dimension=active_dim)
     )
 
     scan_exts = extensions if extensions is not None else SUPPORTED_EXTENSIONS
@@ -213,7 +221,10 @@ def index_directory(
 
     total_files = len(files)
     stats = IndexingStats(
-        files_scanned=total_files, tokenizer=active_tokenizer
+        files_scanned=total_files,
+        tokenizer=active_tokenizer,
+        embed_model=active_model,
+        embed_dim=active_embedder.dimension,
     )
 
     for idx, file_path in enumerate(files, start=1):

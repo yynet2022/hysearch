@@ -10,8 +10,18 @@ from hysearch.core.chunker import (
     compute_file_hash,
     compute_text_hash,
 )
-from hysearch.core.config import DEFAULT_EMBED_DIM
-from hysearch.core.embedder import DummyEmbedder, FastEmbedder
+from hysearch.core.config import (
+    DEFAULT_EMBED_DIM,
+    DEFAULT_EMBED_MODEL,
+    EMBED_MODEL_GEMMA,
+    EMBED_MODEL_MPNET,
+    EMBED_MODEL_QWEN3,
+)
+from hysearch.core.embedder import (
+    DummyEmbedder,
+    FastEmbedder,
+    resolve_embed_model,
+)
 
 
 def test_compute_text_and_file_hash(tmp_path: Path) -> None:
@@ -117,22 +127,42 @@ def test_fastembedder_empty_list() -> None:
     assert embedder.embed([]) == []
 
 
+def test_resolve_embed_model() -> None:
+    """Verify resolve_embed_model validates and resolves model and dim."""
+    assert resolve_embed_model(None) == (DEFAULT_EMBED_MODEL, 384)
+    assert resolve_embed_model(EMBED_MODEL_MPNET) == (EMBED_MODEL_MPNET, 768)
+    assert resolve_embed_model(EMBED_MODEL_QWEN3.lower()) == (
+        EMBED_MODEL_QWEN3,
+        1024,
+    )
+    assert resolve_embed_model(f"  {EMBED_MODEL_GEMMA}  ") == (
+        EMBED_MODEL_GEMMA,
+        768,
+    )
+
+    with pytest.raises(ValueError, match="Unsupported embedding model"):
+        resolve_embed_model("unknown/model-v1")
+
+
 def test_fastembedder_mocked_model(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Verify FastEmbedder lazy initialization and vector conversion."""
+    """Verify FastEmbedder lazy initialization and passage/query methods."""
+
+    class MockArray:
+        def __init__(self, vals: list[float]) -> None:
+            self.vals = vals
+
+        def tolist(self) -> list[float]:
+            return self.vals
 
     class MockTextEmbedding:
         def __init__(self, model_name: str) -> None:
             self.model_name = model_name
 
-        def embed(self, texts: list[str]) -> list[object]:
-            class MockArray:
-                def __init__(self, vals: list[float]) -> None:
-                    self.vals = vals
-
-                def tolist(self) -> list[float]:
-                    return self.vals
-
+        def passage_embed(self, texts: list[str]) -> list[object]:
             return [MockArray([0.1, 0.2, 0.3]) for _ in texts]
+
+        def query_embed(self, query: str) -> list[object]:
+            return [MockArray([0.4, 0.5, 0.6])]
 
     monkeypatch.setattr("fastembed.TextEmbedding", MockTextEmbedding)
 
@@ -140,14 +170,14 @@ def test_fastembedder_mocked_model(monkeypatch: pytest.MonkeyPatch) -> None:
     assert embedder.dimension == 3
     assert embedder._model_instance is None
 
-    # embed の呼び出しでモデルが遅延ロードされ、結果が返ること
+    # embed の呼び出しで passage_embed が呼ばれ結果が返ること
     vectors = embedder.embed(["hello", "world"])
     assert embedder._model_instance is not None
     assert vectors == [[0.1, 0.2, 0.3], [0.1, 0.2, 0.3]]
 
-    # embed_query の呼び出し
+    # embed_query の呼び出しで query_embed が呼ばれ結果が返ること
     query_vec = embedder.embed_query("query")
-    assert query_vec == [0.1, 0.2, 0.3]
+    assert query_vec == [0.4, 0.5, 0.6]
 
 
 def test_find_split_point_boundaries() -> None:

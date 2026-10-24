@@ -37,9 +37,11 @@ from hysearch.core.config import (
 from hysearch.core.database import (
     get_connection,
     get_db_status,
+    get_stored_embed_model,
     get_stored_tokenizer,
     init_db,
 )
+from hysearch.core.embedder import resolve_embed_model
 from hysearch.core.indexer import index_directory, prune_missing_files
 from hysearch.core.searcher import SearchMode, search
 from hysearch.core.tokenizer import resolve_tokenizer
@@ -128,6 +130,19 @@ def index_cmd(
             ),
         ),
     ] = None,
+    model: Annotated[
+        str | None,
+        typer.Option(
+            "--model",
+            "-m",
+            help=(
+                "Embedding model: "
+                "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2, "
+                "sentence-transformers/paraphrase-multilingual-mpnet-base-v2, "
+                "Qwen/Qwen3-Embedding-0.6B-Q, or google/embeddinggemma-300m"
+            ),
+        ),
+    ] = None,
     db: Annotated[
         Path,
         typer.Option("--db", help="Path to the SQLite database file"),
@@ -143,19 +158,38 @@ def index_cmd(
     else:
         resolved_req = None
 
+    if model is not None:
+        try:
+            resolved_model, resolved_dim = resolve_embed_model(model)
+        except ValueError as exc:
+            console.print(f"[red]Error:[/] {exc}")
+            raise typer.Exit(code=1) from exc
+    else:
+        resolved_model = None
+        resolved_dim = None
+
     parsed_exts = parse_extension_filters(ext)
     with get_connection(db) as conn:
         stored_tok = get_stored_tokenizer(conn)
+        stored_model = get_stored_embed_model(conn)
         try:
             target_tok = (
                 resolved_req
                 if resolved_req is not None
                 else resolve_tokenizer(stored_tok)
             )
+            if resolved_model is not None:
+                target_model = resolved_model
+                target_dim = resolved_dim
+            else:
+                target_model, target_dim = resolve_embed_model(stored_model)
             init_db(
                 conn,
+                embed_dim=target_dim,
                 tokenizer=target_tok,
                 force_reinit_fts=force,
+                embed_model=target_model,
+                force_reinit_vec=force,
             )
         except (ValueError, RuntimeError) as exc:
             console.print(f"[red]Error:[/] {exc}")

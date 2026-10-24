@@ -14,7 +14,12 @@ from typing import Any
 
 import sqlite_vec
 
-from hysearch.core.config import DEFAULT_EMBED_DIM, TOKENIZER_TRIGRAM
+from hysearch.core.config import (
+    DEFAULT_EMBED_DIM,
+    DEFAULT_EMBED_MODEL,
+    SUPPORTED_EMBED_MODELS,
+    TOKENIZER_TRIGRAM,
+)
 
 PathLike = str | Path
 SCHEMA_VERSION: int = 2
@@ -91,6 +96,11 @@ DROP TRIGGER IF EXISTS chunks_au;
 DROP TABLE IF EXISTS fts_chunks;
 """
 
+DROP_VEC_SQL = """
+DROP TRIGGER IF EXISTS chunks_ad_vec;
+DROP TABLE IF EXISTS vec_chunks;
+"""
+
 
 def create_connection(db_path: PathLike) -> sqlite3.Connection:
     """Create a new SQLite connection with foreign keys and sqlite-vec loaded.
@@ -147,6 +157,20 @@ def get_schema_version(conn: sqlite3.Connection) -> int:
     return int(row[0]) if row else 0
 
 
+def _get_meta_value(conn: sqlite3.Connection, key: str) -> str | None:
+    """Retrieve a metadata value by key if the meta table exists."""
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='meta';"
+    )
+    if cursor.fetchone() is not None:
+        cursor.execute("SELECT value FROM meta WHERE key = ?;", (key,))
+        row = cursor.fetchone()
+        if row is not None:
+            return str(row[0])
+    return None
+
+
 def get_stored_tokenizer(conn: sqlite3.Connection) -> str | None:
     """Retrieve the tokenizer name stored in the database metadata.
 
@@ -156,17 +180,12 @@ def get_stored_tokenizer(conn: sqlite3.Connection) -> str | None:
     Returns:
         str | None: Stored tokenizer name, or None if not yet initialized.
     """
-    cursor = conn.cursor()
-    cursor.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name='meta';"
-    )
-    if cursor.fetchone() is not None:
-        cursor.execute("SELECT value FROM meta WHERE key = 'tokenizer';")
-        row = cursor.fetchone()
-        if row is not None:
-            return str(row[0])
+    meta_val = _get_meta_value(conn, "tokenizer")
+    if meta_val is not None:
+        return meta_val
 
     # Legacy DB (v0/v1) 判定: fts_chunks が既に存在する場合は trigram とみなす
+    cursor = conn.cursor()
     cursor.execute(
         "SELECT name FROM sqlite_master "
         "WHERE type='table' AND name='fts_chunks';"
@@ -189,22 +208,101 @@ def get_db_tokenizer(conn: sqlite3.Connection) -> str:
     return get_stored_tokenizer(conn) or TOKENIZER_TRIGRAM
 
 
+def get_stored_embed_model(conn: sqlite3.Connection) -> str | None:
+    """Retrieve the embedding model name stored in the database metadata.
+
+    Args:
+        conn: Open SQLite connection.
+
+    Returns:
+        str | None: Stored model name, or None if not yet initialized.
+    """
+    meta_val = _get_meta_value(conn, "embed_model")
+    if meta_val is not None:
+        return meta_val
+
+    # Legacy DB 判定: vec_chunks が既に存在する場合はデフォルトモデルとみなす
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT name FROM sqlite_master "
+        "WHERE type='table' AND name='vec_chunks';"
+    )
+    if cursor.fetchone() is not None:
+        return DEFAULT_EMBED_MODEL
+
+    return None
+
+
+def get_db_embed_model(conn: sqlite3.Connection) -> str:
+    """Retrieve the active embedding model for the database.
+
+    Args:
+        conn: Open SQLite connection.
+
+    Returns:
+        str: Active embedding model name.
+    """
+    return get_stored_embed_model(conn) or DEFAULT_EMBED_MODEL
+
+
+def get_stored_embed_dim(conn: sqlite3.Connection) -> int | None:
+    """Retrieve the embedding dimension stored in the database metadata.
+
+    Args:
+        conn: Open SQLite connection.
+
+    Returns:
+        int | None: Stored vector dimension, or None if not yet initialized.
+    """
+    meta_val = _get_meta_value(conn, "embed_dim")
+    if meta_val is not None:
+        return int(meta_val)
+
+    # Legacy DB 判定: vec_chunks が既に存在する場合はデフォルト次元数とみなす
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT name FROM sqlite_master "
+        "WHERE type='table' AND name='vec_chunks';"
+    )
+    if cursor.fetchone() is not None:
+        return DEFAULT_EMBED_DIM
+
+    return None
+
+
+def get_db_embed_dim(conn: sqlite3.Connection) -> int:
+    """Retrieve the active embedding dimension for the database.
+
+    Args:
+        conn: Open SQLite connection.
+
+    Returns:
+        int: Active embedding dimension.
+    """
+    return get_stored_embed_dim(conn) or DEFAULT_EMBED_DIM
+
+
 def init_db(
     conn: sqlite3.Connection,
-    embed_dim: int = DEFAULT_EMBED_DIM,
+    embed_dim: int | None = None,
     tokenizer: str | None = None,
     force_reinit_fts: bool = False,
+    embed_model: str | None = None,
+    force_reinit_vec: bool = False,
 ) -> None:
     """Initialize the required database tables, triggers, and vector tables.
 
     Args:
         conn: Open SQLite connection.
-        embed_dim: Dimension of embeddings for the vector table.
+        embed_dim: Optional explicit dimension of embeddings for vector table.
         tokenizer: Optional tokenizer name to configure for FTS5.
         force_reinit_fts: Whether to recreate FTS tables if tokenizer changed.
+        embed_model: Optional embedding model name to configure and store.
+        force_reinit_vec: Whether to recreate vector tables if model changed.
 
     Raises:
-        ValueError: If tokenizer differs from stored tokenizer without force.
+        ValueError: If tokenizer or embedding model differs from stored
+            configuration without force.
     """
     stored = get_stored_tokenizer(conn)
     if stored is not None:
@@ -225,6 +323,50 @@ def init_db(
         )
         recreate_fts = False
 
+    stored_model = get_stored_embed_model(conn)
+    stored_dim = get_stored_embed_dim(conn)
+    if stored_model is not None:
+        if embed_model is not None and embed_model != stored_model:
+            if not force_reinit_vec:
+                raise ValueError(
+                    "Database is already indexed with embedding model "
+                    f"'{stored_model}'. Use --force to re-index with "
+                    f"'{embed_model}'."
+                )
+            active_model = embed_model
+            active_dim = (
+                embed_dim
+                if embed_dim is not None
+                else SUPPORTED_EMBED_MODELS.get(
+                    active_model, DEFAULT_EMBED_DIM
+                )
+            )
+            recreate_vec = True
+        else:
+            active_model = stored_model
+            active_dim = (
+                embed_dim
+                if embed_dim is not None
+                else (
+                    stored_dim
+                    if stored_dim is not None
+                    else SUPPORTED_EMBED_MODELS.get(
+                        active_model, DEFAULT_EMBED_DIM
+                    )
+                )
+            )
+            recreate_vec = False
+    else:
+        active_model = (
+            embed_model if embed_model is not None else DEFAULT_EMBED_MODEL
+        )
+        active_dim = (
+            embed_dim
+            if embed_dim is not None
+            else SUPPORTED_EMBED_MODELS.get(active_model, DEFAULT_EMBED_DIM)
+        )
+        recreate_vec = False
+
     with conn:
         conn.executescript(INIT_BASE_TABLES_SQL)
 
@@ -236,10 +378,13 @@ def init_db(
         else:
             conn.executescript(INIT_UNICODE61_FTS_SQL)
 
+        if recreate_vec:
+            conn.executescript(DROP_VEC_SQL)
+
         vec_sql = (
             f"CREATE VIRTUAL TABLE IF NOT EXISTS vec_chunks USING vec0(\n"
             f"    id INTEGER PRIMARY KEY,\n"
-            f"    embedding float[{embed_dim}]\n"
+            f"    embedding float[{active_dim}]\n"
             f");"
         )
         conn.execute(vec_sql)
@@ -263,11 +408,21 @@ def init_db(
                 "ALTER TABLE files ADD COLUMN mtime REAL NOT NULL DEFAULT 0.0;"
             )
 
-        # 使用トークナイザーを meta テーブルに保存
+        # 使用トークナイザーおよび埋め込みモデル情報を meta テーブルに保存
         conn.execute(
             "INSERT OR REPLACE INTO meta (key, value) "
             "VALUES ('tokenizer', ?);",
             (active_tokenizer,),
+        )
+        conn.execute(
+            "INSERT OR REPLACE INTO meta (key, value) "
+            "VALUES ('embed_model', ?);",
+            (active_model,),
+        )
+        conn.execute(
+            "INSERT OR REPLACE INTO meta (key, value) "
+            "VALUES ('embed_dim', ?);",
+            (str(active_dim),),
         )
 
         # スキーマバージョンを記録
@@ -282,7 +437,8 @@ def get_db_status(db_path: PathLike) -> dict[str, Any]:
 
     Returns:
         dict[str, Any]: Dictionary of status fields (Database Path, Tokenizer,
-            Files Indexed, Total Chunks, Database Size, Last Modified).
+            Embedding Model, Embedding Dim, Files Indexed, Total Chunks,
+            Database Size, Last Modified).
     """
     path = Path(db_path)
     stat = path.stat()
@@ -294,6 +450,8 @@ def get_db_status(db_path: PathLike) -> dict[str, Any]:
     with get_connection(path) as conn:
         init_db(conn)
         active_tokenizer = get_db_tokenizer(conn)
+        active_model = get_db_embed_model(conn)
+        active_dim = get_db_embed_dim(conn)
         file_count = conn.execute("SELECT COUNT(*) FROM files;").fetchone()[0]
         chunk_count = conn.execute("SELECT COUNT(*) FROM chunks;").fetchone()[
             0
@@ -302,6 +460,8 @@ def get_db_status(db_path: PathLike) -> dict[str, Any]:
     return {
         "Database Path": str(path.resolve()),
         "Tokenizer": active_tokenizer,
+        "Embedding Model": active_model,
+        "Embedding Dim": active_dim,
         "Files Indexed": int(file_count),
         "Total Chunks": int(chunk_count),
         "Database Size": f"{size_kb:.2f} KB",

@@ -98,6 +98,12 @@ sudo chmod 644 /etc/profile.d/hysearch.sh
 
 初回インデックス作成時、`--tokenizer` (`-t`) を省略すると、環境にインストールされているトークナイザーを **`sudachi-full` → `sudachi-core` → `sudachi-small` → `trigram`** の優先順で自動検出し、データベース内のメタデータに記録します。2回目以降の更新や検索 (`query`) では、記録されたトークナイザーが自動的に使用されます。
 
+また、`--model` (`-m`) オプションにより、ベクトル検索に使用する埋め込み（Embedding）モデルを以下の4つから選択できます。選択されたモデル名と次元数はデータベース内の `meta` テーブルに記録され、2回目以降の更新や検索 (`query` / `server`) でも自動的に引き継がれます。
+- `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2`（デフォルト: 384次元 / 約0.22GB）
+- `sentence-transformers/paraphrase-multilingual-mpnet-base-v2`（768次元 / 約1.0GB）
+- `Qwen/Qwen3-Embedding-0.6B-Q`（1024次元 / 約1.12GB）
+- `google/embeddinggemma-300m`（768次元 / 約1.24GB）
+
 ```bash
 # カレントディレクトリ配下をインデックス化 (トークナイザーは初回に自動検出)
 hysearch index .
@@ -109,6 +115,13 @@ hysearch index ./docs -t trigram
 
 # 既存DBのトークナイザーを別のものに変更する場合は --force (-f) を併用
 hysearch index ./docs -t sudachi-full --force
+
+# 埋め込みモデルを明示的に指定してインデックス化 (-m / --model)
+hysearch index ./docs --model Qwen/Qwen3-Embedding-0.6B-Q
+hysearch index ./docs -m google/embeddinggemma-300m
+
+# 既存DBの埋め込みモデルを別のものに変更する場合は --force (-f) を併用
+hysearch index ./docs -m sentence-transformers/paraphrase-multilingual-mpnet-base-v2 --force
 
 # チャンクサイズとオーバーラップを指定してインデックス化
 hysearch index ./docs --chunk-size 400 --overlap 80

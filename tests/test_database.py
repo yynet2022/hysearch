@@ -6,13 +6,22 @@ from pathlib import Path
 import pytest
 import sqlite_vec
 
-from hysearch.core.config import DEFAULT_EMBED_DIM, TOKENIZER_TRIGRAM
+from hysearch.core.config import (
+    DEFAULT_EMBED_DIM,
+    DEFAULT_EMBED_MODEL,
+    EMBED_MODEL_MPNET,
+    TOKENIZER_TRIGRAM,
+)
 from hysearch.core.database import (
     SCHEMA_VERSION,
     create_connection,
     get_connection,
+    get_db_embed_dim,
+    get_db_embed_model,
     get_db_tokenizer,
     get_schema_version,
+    get_stored_embed_dim,
+    get_stored_embed_model,
     get_stored_tokenizer,
     init_db,
 )
@@ -219,4 +228,46 @@ def test_tokenizer_meta_and_reinit() -> None:
     # Calling init_db again with None or matching tokenizer preserves it
     init_db(conn, tokenizer=None)
     assert get_stored_tokenizer(conn) == "sudachi-core"
+    conn.close()
+
+
+def test_embed_model_meta_and_reinit() -> None:
+    """Verify embedding model metadata storage, legacy fallback, and reinit."""
+    conn = create_connection(":memory:")
+    # Empty DB has no stored model/dim; getters return defaults
+    assert get_stored_embed_model(conn) is None
+    assert get_stored_embed_dim(conn) is None
+    assert get_db_embed_model(conn) == DEFAULT_EMBED_MODEL
+    assert get_db_embed_dim(conn) == DEFAULT_EMBED_DIM
+
+    # Legacy DB (has vec_chunks but no meta table) -> detected as default
+    conn.execute(
+        "CREATE VIRTUAL TABLE vec_chunks USING vec0("
+        "id INTEGER PRIMARY KEY, embedding float[384]);"
+    )
+    assert get_stored_embed_model(conn) == DEFAULT_EMBED_MODEL
+    assert get_stored_embed_dim(conn) == DEFAULT_EMBED_DIM
+
+    # Initialize with default (migrates legacy DB and records meta)
+    init_db(conn)
+    assert get_stored_embed_model(conn) == DEFAULT_EMBED_MODEL
+    assert get_stored_embed_dim(conn) == DEFAULT_EMBED_DIM
+
+    # Attempting to change embedding model without force raises ValueError
+    with pytest.raises(
+        ValueError, match="already indexed with embedding model"
+    ):
+        init_db(conn, embed_model=EMBED_MODEL_MPNET, force_reinit_vec=False)
+
+    # Re-initializing with force_reinit_vec=True switches model and dim (768)
+    init_db(conn, embed_model=EMBED_MODEL_MPNET, force_reinit_vec=True)
+    assert get_stored_embed_model(conn) == EMBED_MODEL_MPNET
+    assert get_stored_embed_dim(conn) == 768
+    assert get_db_embed_model(conn) == EMBED_MODEL_MPNET
+    assert get_db_embed_dim(conn) == 768
+
+    # Calling init_db again with None preserves stored model and dimension
+    init_db(conn, embed_model=None)
+    assert get_stored_embed_model(conn) == EMBED_MODEL_MPNET
+    assert get_stored_embed_dim(conn) == 768
     conn.close()
