@@ -403,6 +403,8 @@ class IndexingStats(BaseModel):
   * 指定ディレクトリ配下のファイルを再帰走査（デフォルト: `.md`, `.markdown`, `.txt`, `.py`, `.js`, `.ts`）。
   * SHA-256ハッシュによる差分検知により、未変更ファイルをスキップ。
   * `extensions` 引数により対象拡張子を上書き可能。
+  * `exclude_dirs` 引数により指定されたディレクトリ名または相対パスを走査時に枝刈り除外可能。
+  * `dry_run=True` 指定時は、DBへの書き込みや埋め込み推論を行わず、対象ファイル一覧の通知（`on_file`）と統計集計のみを実行可能。
   * `chunks` テーブルには常に生テキストを保存し（スニペット表示用）、トークナイザーが `sudachi-*` の場合は `format_fts_content` で分かち書きしたテキストを `fts_chunks` に挿入する。
 * **孤立ファイル削除 (`prune_missing_files`)**:
   * DB内の全登録ファイル（`files` テーブル）の実体存在を走査。
@@ -440,6 +442,8 @@ Typerを使用して実装。全コマンドで `--db` オプション（デフ�
   * `--overlap` (int, default: 100)
   * `--force` / `-f` (bool, default: False) - ハッシュ差分を無視して全再構築
   * `--ext` / `-e` (list[str] | None, default: None) - インデックス対象の拡張子（指定した場合デフォルトを上書き。既存の他拡張子データはDBに保持）
+  * `--exclude-dir` / `-x` (list[str] | None, default: None) - 走査から除外するディレクトリ名または相対パス（複数指定・カンマ区切り可。例: `.venv`, `node_modules`）
+  * `--dry-run` / `-n` (bool, default: False) - DBを変更せず、スキャン対象となったファイル一覧と統計のみを表示
   * `--tokenizer` / `-t` (str | None, default: None) - FTSトークナイザーの指定（`sudachi-full`, `sudachi-core`, `sudachi-small`, `sudachi`, `trigram`。省略時は初回に自動検出しDBに記録。既存DBと異なるトークナイザーに変更する場合は `--force` が必須）
   * `--model` / `-m` (str | None, default: None) - 埋め込みモデルの指定（`sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2`, `sentence-transformers/paraphrase-multilingual-mpnet-base-v2`, `Qwen/Qwen3-Embedding-0.6B-Q`, `google/embeddinggemma-300m`。省略時は初回にデフォルトモデルを選択し、モデル名と次元数をDBの `meta` テーブルに記録。既存DBと異なるモデルに変更する場合は `--force` が必須）
 

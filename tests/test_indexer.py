@@ -315,3 +315,83 @@ def test_index_with_sudachi_tokenizer(
     assert raw_content == "京都で検索する。"
     assert fts_content == "京都 で 検索 する"
     conn.close()
+
+
+def test_scan_and_index_with_exclude_dirs_and_dry_run(
+    memory_db: sqlite3.Connection,
+    tmp_path: Path,
+    dummy_embedder: DummyEmbedder,
+) -> None:
+    """Verify exclude_dirs prunes directories and dry_run does not write DB."""
+    (tmp_path / "keep.md").write_text("Main document.", encoding="utf-8")
+
+    venv_dir = tmp_path / ".venv" / "lib"
+    venv_dir.mkdir(parents=True)
+    (venv_dir / "pkg.py").write_text("x = 1", encoding="utf-8")
+
+    sub_ignored = tmp_path / "docs" / "drafts"
+    sub_ignored.mkdir(parents=True)
+    (sub_ignored / "secret.md").write_text("Draft", encoding="utf-8")
+
+    sub_active = tmp_path / "docs" / "public"
+    sub_active.mkdir(parents=True)
+    (sub_active / "guide.md").write_text("Public guide", encoding="utf-8")
+
+    # 1. scan_directory with directory name and relative path exclusions
+    scanned = scan_directory(
+        tmp_path,
+        exclude_dirs=["", "./.venv/", "docs/drafts"],
+    )
+    scanned_names = [p.name for p in scanned]
+    assert scanned_names == ["guide.md", "keep.md"]
+
+    # Also test when only a relative path with slash is excluded
+    scanned_rel_only = scan_directory(
+        tmp_path,
+        exclude_dirs=["docs/drafts"],
+    )
+    assert "secret.md" not in [p.name for p in scanned_rel_only]
+    assert "pkg.py" in [p.name for p in scanned_rel_only]
+
+    # 2. Dry-run on uninitialized ":memory:" connection
+    uninit_conn = create_connection(":memory:")
+    file_events: list[tuple[str, bool]] = []
+
+    def on_file(fpath: Path, skipped: bool) -> None:
+        file_events.append((fpath.name, skipped))
+
+    dry_stats = index_directory(
+        conn=uninit_conn,
+        target_dir=tmp_path,
+        exclude_dirs=[".venv", "docs/drafts"],
+        dry_run=True,
+        on_file=on_file,
+    )
+    assert dry_stats.files_scanned == 2
+    assert dry_stats.files_indexed == 2
+    assert dry_stats.files_skipped == 0
+    assert dry_stats.chunks_created == 2
+    assert file_events == [("guide.md", False), ("keep.md", False)]
+    uninit_conn.close()
+
+    # 3. Actual index followed by dry-run to verify skipped file reporting
+    index_directory(
+        conn=memory_db,
+        target_dir=tmp_path,
+        embedder=dummy_embedder,
+        exclude_dirs=[".venv", "docs/drafts"],
+    )
+    assert memory_db.execute("SELECT COUNT(*) FROM files;").fetchone()[0] == 2
+
+    file_events.clear()
+    dry_stats2 = index_directory(
+        conn=memory_db,
+        target_dir=tmp_path,
+        exclude_dirs=[".venv", "docs/drafts"],
+        dry_run=True,
+        on_file=on_file,
+    )
+    assert dry_stats2.files_scanned == 2
+    assert dry_stats2.files_indexed == 0
+    assert dry_stats2.files_skipped == 2
+    assert file_events == [("guide.md", True), ("keep.md", True)]

@@ -548,3 +548,86 @@ def test_cli_model_options_and_errors(tmp_path: Path) -> None:
     )
     assert res_query.exit_code == 0
     assert "1 hits" in res_query.stdout
+
+
+def test_parse_exclude_dirs_empty() -> None:
+    """Verify parse_exclude_dirs returns None on empty or whitespace input."""
+    from hysearch.cli.main import parse_exclude_dirs
+
+    assert parse_exclude_dirs(None) is None
+    assert parse_exclude_dirs([]) is None
+    assert parse_exclude_dirs(["", "  ", "./"]) is None
+
+
+def test_cli_index_exclude_dir_and_dry_run(tmp_path: Path) -> None:
+    """Verify CLI index --exclude-dir and --dry-run options."""
+    project_dir = tmp_path / "proj"
+    project_dir.mkdir()
+    (project_dir / "readme.md").write_text("Project readme", encoding="utf-8")
+
+    venv_dir = project_dir / ".venv"
+    venv_dir.mkdir()
+    (venv_dir / "lib.py").write_text("venv code", encoding="utf-8")
+
+    node_dir = project_dir / "node_modules"
+    node_dir.mkdir()
+    (node_dir / "pkg.js").write_text("js code", encoding="utf-8")
+
+    db_file = tmp_path / "dry_exclude.db"
+
+    # 1. Dry-run with --exclude-dir before DB exists
+    res_dry = runner.invoke(
+        app,
+        [
+            "index",
+            str(project_dir),
+            "--exclude-dir",
+            ".venv,node_modules",
+            "--dry-run",
+            "--db",
+            str(db_file),
+        ],
+    )
+    assert res_dry.exit_code == 0
+    assert "Would index:" in res_dry.stdout
+    assert "readme.md" in res_dry.stdout
+    assert "lib.py" not in res_dry.stdout
+    assert "pkg.js" not in res_dry.stdout
+    assert "Indexing Complete (Dry Run)" in res_dry.stdout
+    # DB file should not have been created on disk during dry-run
+    assert not db_file.exists()
+
+    # 2. Actual index with -x
+    res_index = runner.invoke(
+        app,
+        [
+            "index",
+            str(project_dir),
+            "-x",
+            "./.venv/",
+            "-x",
+            "node_modules",
+            "--db",
+            str(db_file),
+        ],
+    )
+    assert res_index.exit_code == 0
+    assert "Files Indexed: 1" in res_index.stdout
+    assert db_file.exists()
+
+    # 3. Second dry-run after indexing shows Unchanged (skip)
+    res_dry2 = runner.invoke(
+        app,
+        [
+            "index",
+            str(project_dir),
+            "-x",
+            ".venv,node_modules",
+            "-n",
+            "--db",
+            str(db_file),
+        ],
+    )
+    assert res_dry2.exit_code == 0
+    assert "Unchanged (skip):" in res_dry2.stdout
+    assert "Files Skipped: 1" in res_dry2.stdout

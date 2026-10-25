@@ -4,6 +4,7 @@ This module formats indexing progress, search result tables, and
 index status summaries for human-friendly terminal viewing.
 """
 
+from pathlib import Path
 from typing import Any
 
 from rich.console import Console
@@ -15,12 +16,14 @@ from hysearch.core.models import IndexingStats, SearchResponse
 console = Console()
 
 
-def print_indexing_stats(stats: IndexingStats) -> None:
+def print_indexing_stats(stats: IndexingStats, dry_run: bool = False) -> None:
     """Print indexing statistics summary using Rich panel.
 
     Args:
         stats: Completed indexing run statistics.
+        dry_run: Whether indexing ran in dry-run mode.
     """
+    title = "Indexing Complete (Dry Run)" if dry_run else "Indexing Complete"
     text = (
         f"[bold green]Files Scanned:[/] {stats.files_scanned}\n"
         f"[bold cyan]Files Indexed:[/] {stats.files_indexed}\n"
@@ -31,8 +34,23 @@ def print_indexing_stats(stats: IndexingStats) -> None:
         f"({stats.embed_dim}d)\n"
         f"[bold]Elapsed Time:[/] {stats.elapsed_seconds:.3f} s"
     )
-    panel = Panel(text, title="Indexing Complete", expand=False)
+    panel = Panel(text, title=title, expand=False)
     console.print(panel)
+
+
+def print_dry_run_file(file_path: Path, skipped: bool = False) -> None:
+    """Print a single target file notification during dry-run indexing.
+
+    Args:
+        file_path: Resolved path of the discovered file.
+        skipped: Whether the file is unchanged and would be skipped.
+    """
+    if skipped:
+        console.print(
+            f"[yellow][Dry Run][/] Unchanged (skip): [dim]{file_path}[/]"
+        )
+    else:
+        console.print(f"[yellow][Dry Run][/] Would index: {file_path}")
 
 
 def print_search_results(response: SearchResponse) -> None:

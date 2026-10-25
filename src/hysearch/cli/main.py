@@ -21,6 +21,7 @@ from rich.progress import (
 
 from hysearch.cli.display import (
     console,
+    print_dry_run_file,
     print_indexing_stats,
     print_prune_summary,
     print_pruned_file,
@@ -87,6 +88,34 @@ def parse_extension_filters(
     return normalized if normalized else None
 
 
+def parse_exclude_dirs(
+    exclude_inputs: list[str] | None,
+) -> list[str] | None:
+    """Normalize excluded directory options into clean strings.
+
+    Args:
+        exclude_inputs: Raw list of exclude-dir options provided via CLI.
+
+    Returns:
+        list[str] | None: Normalized list of excluded directory patterns,
+            or None if no filter provided.
+    """
+    if not exclude_inputs:
+        return None
+
+    normalized: list[str] = []
+    for item in exclude_inputs:
+        for part in item.split(","):
+            clean = part.strip().replace("\\", "/")
+            while clean.startswith("./"):
+                clean = clean[2:]
+            clean = clean.strip("/")
+            if clean and clean not in normalized:
+                normalized.append(clean)
+
+    return normalized if normalized else None
+
+
 @app.command(name="index")
 def index_cmd(
     dir_path: Annotated[
@@ -119,6 +148,22 @@ def index_cmd(
             help="File extension(s) to index (e.g. .py; overrides defaults)",
         ),
     ] = None,
+    exclude_dir: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--exclude-dir",
+            "-x",
+            help="Directory name(s) or relative path(s) to exclude",
+        ),
+    ] = None,
+    dry_run: Annotated[
+        bool,
+        typer.Option(
+            "--dry-run",
+            "-n",
+            help="Show target files and stats without modifying database",
+        ),
+    ] = False,
     tokenizer: Annotated[
         str | None,
         typer.Option(
@@ -169,7 +214,12 @@ def index_cmd(
         resolved_dim = None
 
     parsed_exts = parse_extension_filters(ext)
-    with get_connection(db) as conn:
+    parsed_excludes = parse_exclude_dirs(exclude_dir)
+    conn_target: Path | str = (
+        ":memory:" if (dry_run and not db.exists()) else db
+    )
+
+    with get_connection(conn_target) as conn:
         stored_tok = get_stored_tokenizer(conn)
         stored_model = get_stored_embed_model(conn)
         try:
@@ -183,37 +233,20 @@ def index_cmd(
                 target_dim = resolved_dim
             else:
                 target_model, target_dim = resolve_embed_model(stored_model)
-            init_db(
-                conn,
-                embed_dim=target_dim,
-                tokenizer=target_tok,
-                force_reinit_fts=force,
-                embed_model=target_model,
-                force_reinit_vec=force,
-            )
+            if not dry_run:
+                init_db(
+                    conn,
+                    embed_dim=target_dim,
+                    tokenizer=target_tok,
+                    force_reinit_fts=force,
+                    embed_model=target_model,
+                    force_reinit_vec=force,
+                )
         except (ValueError, RuntimeError) as exc:
             console.print(f"[red]Error:[/] {exc}")
             raise typer.Exit(code=1) from exc
 
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[bold cyan]{task.description}[/]"),
-            BarColumn(),
-            MofNCompleteColumn(),
-            TimeElapsedColumn(),
-            console=console,
-            transient=True,
-        ) as progress:
-            task_id = progress.add_task("Scanning files...", total=None)
-
-            def on_progress(current: int, total: int, file_path: Path) -> None:
-                progress.update(
-                    task_id,
-                    total=total,
-                    completed=current,
-                    description=f"[{current}/{total}] {file_path.name}",
-                )
-
+        if dry_run:
             stats = index_directory(
                 conn=conn,
                 target_dir=dir_path,
@@ -221,9 +254,46 @@ def index_cmd(
                 overlap=overlap,
                 force=force,
                 extensions=parsed_exts,
-                on_progress=on_progress,
+                exclude_dirs=parsed_excludes,
+                dry_run=True,
+                tokenizer=target_tok,
+                embed_model=target_model,
+                embed_dim=target_dim,
+                on_file=print_dry_run_file,
             )
-    print_indexing_stats(stats)
+        else:
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[bold cyan]{task.description}[/]"),
+                BarColumn(),
+                MofNCompleteColumn(),
+                TimeElapsedColumn(),
+                console=console,
+                transient=True,
+            ) as progress:
+                task_id = progress.add_task("Scanning files...", total=None)
+
+                def on_progress(
+                    current: int, total: int, file_path: Path
+                ) -> None:
+                    progress.update(
+                        task_id,
+                        total=total,
+                        completed=current,
+                        description=f"[{current}/{total}] {file_path.name}",
+                    )
+
+                stats = index_directory(
+                    conn=conn,
+                    target_dir=dir_path,
+                    chunk_size=chunk_size,
+                    overlap=overlap,
+                    force=force,
+                    extensions=parsed_exts,
+                    exclude_dirs=parsed_excludes,
+                    on_progress=on_progress,
+                )
+    print_indexing_stats(stats, dry_run=dry_run)
 
 
 def parse_datetime_filter(val: str, param_name: str) -> datetime:

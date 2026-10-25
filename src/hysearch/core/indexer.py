@@ -5,6 +5,7 @@ to detect changes, splits content into chunks, and stores full-text and
 vector representations in SQLite.
 """
 
+import os
 import sqlite3
 import time
 from collections.abc import Callable, Sequence
@@ -30,18 +31,60 @@ from hysearch.core.tokenizer import format_fts_content, resolve_tokenizer
 
 PathLike = str | Path
 ProgressCallback = Callable[[int, int, Path], None]
+FileActionCallback = Callable[[Path, bool], None]
 PruneCallback = Callable[[str, bool], None]
+
+
+def _normalize_exclude_dirs(
+    exclude_dirs: Sequence[str] | None,
+) -> tuple[set[str], list[str]]:
+    """Normalize excluded directory patterns into names and relative paths."""
+    names: set[str] = set()
+    rel_paths: list[str] = []
+    if not exclude_dirs:
+        return names, rel_paths
+
+    for raw in exclude_dirs:
+        clean = raw.strip().replace("\\", "/")
+        while clean.startswith("./"):
+            clean = clean[2:]
+        clean = clean.strip("/")
+        if not clean:
+            continue
+        if "/" in clean:
+            rel_paths.append(clean)
+        else:
+            names.add(clean)
+    return names, rel_paths
+
+
+def _is_dir_excluded(
+    dir_path: Path,
+    root_dir: Path,
+    exclude_names: set[str],
+    exclude_rel_paths: list[str],
+) -> bool:
+    """Check whether a directory matches any exclusion rule."""
+    if dir_path.name in exclude_names:
+        return True
+    rel_posix = dir_path.relative_to(root_dir).as_posix()
+    return any(
+        rel_posix == pat or rel_posix.startswith(f"{pat}/")
+        for pat in exclude_rel_paths
+    )
 
 
 def scan_directory(
     target_dir: PathLike,
     extensions: Sequence[str] = SUPPORTED_EXTENSIONS,
+    exclude_dirs: Sequence[str] | None = None,
 ) -> list[Path]:
     """Recursively discover files matching supported extensions.
 
     Args:
         target_dir: Root directory path to crawl.
         extensions: Sequence of file extensions to include (e.g. ['.md']).
+        exclude_dirs: Optional directory names or relative paths to exclude.
 
     Returns:
         list[Path]: List of resolved matching file paths, sorted by path.
@@ -57,10 +100,23 @@ def scan_directory(
         raise NotADirectoryError(f"Target path is not a directory: {path}")
 
     ext_set = {e.lower() for e in extensions}
+    exclude_names, exclude_rel_paths = _normalize_exclude_dirs(exclude_dirs)
     matched: list[Path] = []
-    for p in path.rglob("*"):
-        if p.is_file() and p.suffix.lower() in ext_set:
-            matched.append(p)
+
+    for dirpath, dirnames, filenames in os.walk(path):
+        current_dir = Path(dirpath)
+        if exclude_names or exclude_rel_paths:
+            dirnames[:] = [
+                d
+                for d in dirnames
+                if not _is_dir_excluded(
+                    current_dir / d, path, exclude_names, exclude_rel_paths
+                )
+            ]
+        for fname in filenames:
+            file_p = current_dir / fname
+            if file_p.suffix.lower() in ext_set:
+                matched.append(file_p)
 
     matched.sort()
     return matched
@@ -76,6 +132,11 @@ def get_stored_file_hashes(conn: sqlite3.Connection) -> dict[str, str]:
         dict[str, str]: Mapping from file path string to hex hash string.
     """
     cursor = conn.cursor()
+    cursor.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='files';"
+    )
+    if cursor.fetchone() is None:
+        return {}
     cursor.execute("SELECT path, hash FROM files;")
     return {row[0]: row[1] for row in cursor.fetchall()}
 
@@ -187,7 +248,13 @@ def index_directory(
     overlap: int = DEFAULT_CHUNK_OVERLAP,
     force: bool = False,
     extensions: Sequence[str] | None = None,
+    exclude_dirs: Sequence[str] | None = None,
+    dry_run: bool = False,
+    tokenizer: str | None = None,
+    embed_model: str | None = None,
+    embed_dim: int | None = None,
     on_progress: ProgressCallback | None = None,
+    on_file: FileActionCallback | None = None,
 ) -> IndexingStats:
     """Scan and index all matching documents within the target directory.
 
@@ -199,24 +266,46 @@ def index_directory(
         overlap: Overlap characters between chunks.
         force: If True, re-index all files ignoring hash equality.
         extensions: Optional file extensions sequence to filter targets.
+        exclude_dirs: Optional directory names or relative paths to exclude.
+        dry_run: If True, scan and calculate stats without modifying DB.
+        tokenizer: Optional explicit tokenizer name for dry-run reporting.
+        embed_model: Optional explicit embedding model name.
+        embed_dim: Optional explicit embedding vector dimension.
         on_progress: Optional callback receiving (current_index, total_count,
             current_file_path).
+        on_file: Optional callback receiving (file_path, is_skipped) for each
+            discovered file.
 
     Returns:
         IndexingStats: Summary statistics of the indexing process.
     """
     start_time = time.perf_counter()
-    active_tokenizer = resolve_tokenizer(get_db_tokenizer(conn))
-    active_model = get_db_embed_model(conn)
-    active_dim = get_db_embed_dim(conn)
-    active_embedder: EmbedderProtocol = (
+    active_tokenizer = resolve_tokenizer(
+        tokenizer if tokenizer is not None else get_db_tokenizer(conn)
+    )
+    active_model = (
+        embed_model if embed_model is not None else get_db_embed_model(conn)
+    )
+    active_dim = embed_dim if embed_dim is not None else get_db_embed_dim(conn)
+    active_embedder: EmbedderProtocol | None = (
         embedder
         if embedder is not None
-        else FastEmbedder(model_name=active_model, dimension=active_dim)
+        else (
+            None
+            if dry_run
+            else FastEmbedder(model_name=active_model, dimension=active_dim)
+        )
+    )
+    effective_dim = (
+        active_embedder.dimension
+        if active_embedder is not None
+        else active_dim
     )
 
     scan_exts = extensions if extensions is not None else SUPPORTED_EXTENSIONS
-    files = scan_directory(target_dir, extensions=scan_exts)
+    files = scan_directory(
+        target_dir, extensions=scan_exts, exclude_dirs=exclude_dirs
+    )
     stored_hashes = get_stored_file_hashes(conn)
 
     total_files = len(files)
@@ -224,7 +313,7 @@ def index_directory(
         files_scanned=total_files,
         tokenizer=active_tokenizer,
         embed_model=active_model,
-        embed_dim=active_embedder.dimension,
+        embed_dim=effective_dim,
     )
 
     for idx, file_path in enumerate(files, start=1):
@@ -240,8 +329,21 @@ def index_directory(
             and stored_hashes[resolved_str] == current_hash
         ):
             stats.files_skipped += 1
+            if on_file is not None:
+                on_file(file_path, True)
             continue
 
+        if on_file is not None:
+            on_file(file_path, False)
+
+        if dry_run:
+            text = file_path.read_text(encoding="utf-8", errors="replace")
+            chunks = chunk_text(text, chunk_size=chunk_size, overlap=overlap)
+            stats.files_indexed += 1
+            stats.chunks_created += len(chunks)
+            continue
+
+        assert active_embedder is not None
         created = index_file(
             conn=conn,
             file_path=file_path,

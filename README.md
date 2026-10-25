@@ -131,6 +131,15 @@ hysearch index ./src --ext .py
 hysearch index ./src -e .py -e .ts
 hysearch index ./src --ext "py,js,ts"
 
+# 特定のディレクトリを走査対象から除外 (--exclude-dir / -x, 複数指定・カンマ区切り可)
+hysearch index . --exclude-dir .venv
+hysearch index . -x .venv -x node_modules
+hysearch index . --exclude-dir ".venv,node_modules,docs/drafts"
+
+# 実際にはDBを更新せず、スキャン対象ファイル一覧と統計のみ確認 (--dry-run / -n)
+hysearch index . --exclude-dir .venv --dry-run
+hysearch index . -x ".venv,node_modules" -n
+
 # 差分キャッシュを無視して強制的に全再構築
 hysearch index ./docs --force
 
