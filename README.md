@@ -233,6 +233,30 @@ hysearch server --host 0.0.0.0 --port 9000
 hysearch server --no-open
 ```
 
+### 7. MCP サーバー起動 (`mcp`)
+Model Context Protocol (MCP) に対応した AI エージェントやクライアント（Claude Desktop, Cursor, Antigravity 等）から、`hysearch` の読み取り専用ツール（`query` および `status`）を `stdio` トランスポート経由で利用できます。両ツールとも `READ_ONLY_ANNOTATIONS`（`readOnlyHint=True`, `destructiveHint=False`, `idempotentHint=True`, `openWorldHint=False`）が付与され、結果は整形済み JSON 文字列として返却されます。
+
+- `status`: インデックス統計情報（DBパス、サイズ、トークナイザー、埋め込みモデル、登録ファイル数、チャンク総数、最終更新日時）を JSON で返却。
+- `query`: ハイブリッド検索を実行し、結果を JSON で返却（引数: `query`, `top`, `mode`, `rrf_k`, `path`, `glob`, `since`, `after`, `until`, `before`）。
+
+```bash
+# stdio トランスポートで MCP サーバーを起動 (--db でインデックスDBを指定)
+hysearch mcp --db /path/to/.hysearch.db
+```
+
+MCP クライアントの設定ファイル（`mcp_config.json` / `claude_desktop_config.json` 等）での設定例：
+
+```json
+{
+  "mcpServers": {
+    "hysearch": {
+      "command": "hysearch",
+      "args": ["mcp", "--db", "/path/to/.hysearch.db"]
+    }
+  }
+}
+```
+
 ---
 
 ## 検索アルゴリズム: RRF (Reciprocal Rank Fusion)

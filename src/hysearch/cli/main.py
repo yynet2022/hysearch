@@ -5,7 +5,6 @@ running hybrid queries, viewing index status, and resetting the database.
 """
 
 import json
-from datetime import datetime
 from pathlib import Path
 from typing import Annotated
 
@@ -44,9 +43,9 @@ from hysearch.core.database import (
 )
 from hysearch.core.embedder import resolve_embed_model
 from hysearch.core.indexer import index_directory, prune_missing_files
-from hysearch.core.searcher import SearchMode, search
+from hysearch.core.searcher import search, validate_and_parse_search_params
 from hysearch.core.tokenizer import resolve_tokenizer
-from hysearch.utils.text import parse_datetime_str
+from hysearch.mcp.server import run_mcp_server
 from hysearch.web.runner import run_server
 
 app = typer.Typer(
@@ -296,23 +295,6 @@ def index_cmd(
     print_indexing_stats(stats, dry_run=dry_run)
 
 
-def parse_datetime_filter(val: str, param_name: str) -> datetime:
-    """Parse a date or datetime string into a datetime object.
-
-    Args:
-        val: Input date string.
-        param_name: Parameter name for error reporting.
-
-    Returns:
-        datetime: Parsed datetime instance.
-    """
-    try:
-        return parse_datetime_str(val, param_name)
-    except ValueError as exc:
-        console.print(f"[red]Error:[/] {exc}")
-        raise typer.Exit(code=1) from exc
-
-
 @app.command(name="query")
 def query_cmd(
     query_str: Annotated[
@@ -392,40 +374,17 @@ def query_cmd(
     ] = DEFAULT_DB_PATH,
 ) -> None:
     """Search the indexed database using hybrid, BM25, or vector mode."""
-    if mode not in ("hybrid", "bm25", "vector"):
-        console.print(
-            f"[red]Error:[/] Invalid mode '{mode}'. "
-            "Choose from hybrid, bm25, or vector."
+    try:
+        search_mode, since_dt, until_dt = validate_and_parse_search_params(
+            mode=mode,
+            since=since,
+            after=after,
+            until=until,
+            before=before,
         )
-        raise typer.Exit(code=1)
-
-    if since and after and since != after:
-        console.print(
-            "[red]Error:[/] Conflicting values provided for "
-            "--since and --after."
-        )
-        raise typer.Exit(code=1)
-
-    if until and before and until != before:
-        console.print(
-            "[red]Error:[/] Conflicting values provided for "
-            "--until and --before."
-        )
-        raise typer.Exit(code=1)
-
-    effective_since = since or after
-    effective_until = until or before
-
-    since_dt = (
-        parse_datetime_filter(effective_since, "--since")
-        if effective_since
-        else None
-    )
-    until_dt = (
-        parse_datetime_filter(effective_until, "--until")
-        if effective_until
-        else None
-    )
+    except ValueError as exc:
+        console.print(f"[red]Error:[/] {exc}")
+        raise typer.Exit(code=1) from exc
 
     if not db.exists():
         console.print(
@@ -434,7 +393,6 @@ def query_cmd(
         )
         raise typer.Exit(code=1)
 
-    search_mode: SearchMode = mode  # type: ignore[assignment]
     with get_connection(db) as conn:
         init_db(conn)
         try:
@@ -630,4 +588,27 @@ def server_cmd(
         )
     except (ValueError, RuntimeError) as exc:
         console.print(f"[red]Error:[/] {exc}")
+        raise typer.Exit(code=1) from exc
+
+
+@app.command(name="mcp")
+def mcp_cmd(
+    db: Annotated[
+        Path,
+        typer.Option("--db", help="Path to SQLite database file"),
+    ] = DEFAULT_DB_PATH,
+) -> None:
+    """Start the MCP server over stdio transport for status and query."""
+    if not db.exists():
+        typer.echo(
+            f"Error: Database file '{db}' does not exist. "
+            "Run 'hysearch index' first.",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    try:
+        run_mcp_server(db_path=db)
+    except (FileNotFoundError, ValueError, RuntimeError) as exc:
+        typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(code=1) from exc

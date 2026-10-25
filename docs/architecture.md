@@ -141,7 +141,7 @@ SQLite データベースには以下の5要素を構成しています。
 - `hybrid`, `bm25`, `vector` のモード切り替えに対応。
 
 ### 6.6 CLI & UI (`hysearch.cli`)
-- Typer による直感的なサブコマンド（`index`, `query`, `status`, `prune`, `reset`, `server`）。
+- Typer による直感的なサブコマンド（`index`, `query`, `status`, `prune`, `reset`, `server`, `mcp`）。
 - `index` コマンドにおける特定拡張子の指定（`--ext`）、除外ディレクトリの指定（`--exclude-dir` / `-x`）、ドライラン確認（`--dry-run` / `-n`）、トークナイザー指定（`--tokenizer` / `-t`）、および埋め込みモデル指定（`--model` / `-m`）。
 - `query` コマンドにおける多彩な検索フィルタ（`--path`, `--glob`, `--since`, `--until` 等）と柔軟な日時パース（ISO 8601, YYYY-MM-DD 等）。
 - `prune` コマンドにおける削除ファイルのリアルタイム都度通知とドライラン（`--dry-run`）。
@@ -153,4 +153,11 @@ SQLite データベースには以下の5要素を構成しています。
 - デフォルトポート（`8888`）が使用中の場合は空きポートを自動探索してバインドし、`--port` 明示指定時はポート競合を即座に検知してエラー終了する安全なポート解決機構（`resolve_server_port`）。
 - サーバー起動と同時に標準ブラウザを自動で開く機能（`--open` / `--no-open`）。
 - シングルページ HTML UI（`/`）と REST エンドポイント（`/api/status`, `/api/query`）により、ブラウザ上でインデックス状態の確認および各種パラメータ・フィルタを用いた対話的な連続検索を提供。
+
+### 6.8 MCP Server (`hysearch.mcp`)
+- 公式 `mcp` パッケージ（`mcp.server.mcpserver.MCPServer`）による Model Context Protocol (MCP) サーバー（`hysearch mcp --db <path>` コマンドで `stdio` トランスポートにて起動）。
+- 読み取り専用の2つのツール（`status` および `query`）のみを公開し、双方に `READ_ONLY_ANNOTATIONS`（`readOnlyHint=True`, `destructiveHint=False`, `idempotentHint=True`, `openWorldHint=False`）を付与。
+- `status` ツールは DB の統計情報（パス、サイズ、トークナイザー、埋め込みモデル、次元数、ファイル数、チャンク数、最終更新日時）を JSON 文字列で返却。
+- `query` ツールは CLI / Web と同一の検索パラメータ・フィルタ（`query`, `top`, `mode`, `rrf_k`, `path`, `glob`, `since`, `after`, `until`, `before`）を受け付け、`SearchResponse` を JSON 文字列で返却。
+- ベクトル検索を含むモードでは、DB に記録された埋め込みモデル名・次元数に対応する `FastEmbedder` インスタンスを MCP サーバープロセス内でキャッシュし、連続する検索ツール呼び出しを高速化。
 

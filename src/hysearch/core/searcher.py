@@ -29,9 +29,61 @@ from hysearch.core.database import (
 from hysearch.core.embedder import EmbedderProtocol, FastEmbedder
 from hysearch.core.models import SearchHit, SearchResponse
 from hysearch.core.tokenizer import build_fts_query, resolve_tokenizer
-from hysearch.utils.text import extract_snippet
+from hysearch.utils.text import extract_snippet, parse_datetime_str
 
 SearchMode = Literal["hybrid", "bm25", "vector"]
+
+
+def validate_and_parse_search_params(
+    mode: str = "hybrid",
+    since: str | None = None,
+    after: str | None = None,
+    until: str | None = None,
+    before: str | None = None,
+) -> tuple[SearchMode, datetime | None, datetime | None]:
+    """Validate search mode and resolve since/after and until/before filters.
+
+    Args:
+        mode: Requested search mode ('hybrid', 'bm25', or 'vector').
+        since: Optional minimum modification date string.
+        after: Optional alias for since.
+        until: Optional maximum modification date string.
+        before: Optional alias for until.
+
+    Returns:
+        tuple[SearchMode, datetime | None, datetime | None]:
+            Validated (search_mode, since_dt, until_dt).
+
+    Raises:
+        ValueError: If mode is invalid, date filters conflict, or date strings
+            cannot be parsed.
+    """
+    if mode not in ("hybrid", "bm25", "vector"):
+        raise ValueError(
+            f"Invalid mode '{mode}'. Choose from hybrid, bm25, or vector."
+        )
+
+    if since and after and since != after:
+        raise ValueError("Conflicting values provided for since and after.")
+
+    if until and before and until != before:
+        raise ValueError("Conflicting values provided for until and before.")
+
+    effective_since = since or after
+    effective_until = until or before
+
+    since_dt = (
+        parse_datetime_str(effective_since, "since")
+        if effective_since
+        else None
+    )
+    until_dt = (
+        parse_datetime_str(effective_until, "until")
+        if effective_until
+        else None
+    )
+    search_mode: SearchMode = mode  # type: ignore[assignment]
+    return search_mode, since_dt, until_dt
 
 
 def _match_path(file_path_str: str, path_filter: str) -> bool:

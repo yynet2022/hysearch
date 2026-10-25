@@ -96,6 +96,12 @@ hysearch/
 │       │   ├── indexer.py         # インデックス登録・更新パイプライン
 │       │   ├── searcher.py        # ハイブリッド検索・RRF統合ロジック
 │       │   └── models.py          # Pydanticデータモデル / 型定義
+│       ├── mcp/
+│       │   ├── __init__.py
+│       │   └── server.py          # MCPサーバー (stdio / READ_ONLY_ANNOTATIONS)
+│       ├── web/
+│       │   ├── __init__.py
+│       │   └── app.py             # FastAPI ローカルWebサーバー
 │       └── utils/
 │           ├── __init__.py
 │           └── text.py            # テキストクリーニング・ハイライト処理
@@ -107,7 +113,9 @@ hysearch/
 │   ├── test_database.py           # テーブル作成・FTS5/sqlite-vec動作テスト
 │   ├── test_tokenizer.py          # トークナイザー解決・Sudachi分かち書きテスト
 │   ├── test_indexer.py            # 差分インデックス処理テスト
-│   └── test_searcher.py           # RRF計算・検索ロジックテスト
+│   ├── test_searcher.py           # RRF計算・検索ロジックテスト
+│   ├── test_web.py                # FastAPI Web UI / API テスト
+│   └── test_mcp.py                # MCPサーバー (status / query) テスト
 ├── .gitignore
 ├── pyproject.toml
 ├── README.md
@@ -141,6 +149,7 @@ dependencies = [
     "pydantic>=2.7.0",
     "fastapi>=0.110.0",
     "uvicorn>=0.29.0",
+    "mcp>=2.0.0",
 ]
 
 [project.optional-dependencies]
@@ -426,6 +435,18 @@ class IndexingStats(BaseModel):
   * BM25上位 $N$ 件（例: 50件）とVector上位 $N$ 件（例: 50件）を取得。
   * 各IDについて $RRF\_Score$ を計算して合算し、降順ソートの上位 $K$ 件を返す。
   * IDから `chunks` と `files` をJOINして本文とファイルパスを取得。
+* **共通検索パラメータ検証 (`validate_and_parse_search_params`)**:
+  * CLI・Web API・MCPサーバー間で `mode`（`hybrid` / `bm25` / `vector`）の検証および `since`/`after`, `until`/`before` の排他チェックと日時パースを共通化する。
+
+### 6.7 `src/hysearch/mcp/server.py`
+* 公式 `mcp` パッケージ（`mcp.server.mcpserver.MCPServer`）を使用し、`stdio` トランスポートで動作する読み取り専用 MCP サーバーを構築する。
+* 公開する2つのツール（`status` および `query`）にはいずれも `READ_ONLY_ANNOTATIONS = ToolAnnotations(readOnlyHint=True, destructiveHint=False, idempotentHint=True, openWorldHint=False)` を付与する。
+* **`status` ツール**:
+  * 指定された `--db` パスのインデックス統計情報（DBパス、ファイルサイズ、トークナイザー、埋め込みモデル、次元数、ファイル数、チャンク数、最終更新日時）を整形済み JSON 文字列として返す。
+* **`query` ツール**:
+  * 引数: `query`, `top` (default: 5), `mode` (default: `"hybrid"`), `rrf_k` (default: 60), `path`, `glob`, `since`, `after`, `until`, `before`。
+  * ベクトル検索を含むモードでは、DBの `embed_model` に対応する `FastEmbedder` インスタンスをサーバープロセス内でキャッシュして再利用する。
+  * 検索結果（`SearchResponse`）を整形済み JSON 文字列として返す。
 
 ---
 
@@ -482,6 +503,11 @@ FastAPI / Uvicorn によるローカル Web サーバーを起動し、ブラウ
   * `--open` / `--no-open` (bool, default: `True`): サーバー起動時にブラウザを自動的に開くかどうか
   * `--db` (Path, default: `./.hysearch.db`): データベースファイルパス
 
+#### 7. `hysearch mcp`
+`stdio` トランスポートによる MCP (Model Context Protocol) サーバーを起動し、読み取り専用ツール（`status` および `query`）を AI エージェントや MCP クライアントへ提供する。
+* オプション:
+  * `--db` (Path, default: `./.hysearch.db`): データベースファイルパス
+
 ---
 
 ## 8. 実装における重要な注意点・落とし穴
@@ -523,6 +549,10 @@ FastAPI / Uvicorn によるローカル Web サーバーを起動し、ブラウ
 7. **`test_web.py`**:
    * FastAPI `TestClient` を使用し、`GET /`, `GET /api/status`, `GET /api/query`（各種モード・フィルタ・エラー系）が正常に動作すること。
    * ポート空き判定・自動インクリメント・明示ポート競合時のエラー終了・`hysearch server` CLI コマンドが正常に動作すること。
+8. **`test_mcp.py`**:
+   * `MCPServer` に登録された `status` および `query` ツールに `READ_ONLY_ANNOTATIONS` が正しく設定されていること。
+   * `status` および `query`（各種モード・フィルタ・異常系 `ToolError`・Embedder キャッシュ再利用）が正常に JSON を返すこと。
+   * `hysearch mcp` CLI コマンドが `stdio` トランスポートでサーバーを起動すること。
 
 ---
 

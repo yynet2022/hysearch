@@ -22,8 +22,7 @@ from hysearch.core.database import (
 )
 from hysearch.core.embedder import EmbedderProtocol, FastEmbedder
 from hysearch.core.models import SearchResponse
-from hysearch.core.searcher import SearchMode, search
-from hysearch.utils.text import parse_datetime_str
+from hysearch.core.searcher import search, validate_and_parse_search_params
 
 _TEMPLATE_PATH = Path(__file__).parent / "templates" / "index.html"
 
@@ -97,40 +96,13 @@ def create_app(
                 status_code=400, detail="Search query 'q' must not be empty."
             )
 
-        if mode not in ("hybrid", "bm25", "vector"):
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"Invalid mode '{mode}'. "
-                    "Choose from hybrid, bm25, or vector."
-                ),
-            )
-
-        if since and after and since != after:
-            raise HTTPException(
-                status_code=400,
-                detail="Conflicting values provided for since and after.",
-            )
-
-        if until and before and until != before:
-            raise HTTPException(
-                status_code=400,
-                detail="Conflicting values provided for until and before.",
-            )
-
-        effective_since = since or after
-        effective_until = until or before
-
         try:
-            since_dt = (
-                parse_datetime_str(effective_since, "since")
-                if effective_since
-                else None
-            )
-            until_dt = (
-                parse_datetime_str(effective_until, "until")
-                if effective_until
-                else None
+            search_mode, since_dt, until_dt = validate_and_parse_search_params(
+                mode=mode,
+                since=since,
+                after=after,
+                until=until,
+                before=before,
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -143,8 +115,6 @@ def create_app(
                     "Run 'hysearch index' first."
                 ),
             )
-
-        search_mode: SearchMode = mode  # type: ignore[assignment]
 
         with get_connection(resolved_db) as conn:
             init_db(conn)
