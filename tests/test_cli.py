@@ -631,3 +631,41 @@ def test_cli_index_exclude_dir_and_dry_run(tmp_path: Path) -> None:
     assert res_dry2.exit_code == 0
     assert "Unchanged (skip):" in res_dry2.stdout
     assert "Files Skipped: 1" in res_dry2.stdout
+
+
+def test_cli_read_only_db_operations(tmp_path: Path) -> None:
+    """Verify status, query, and dry-run commands succeed on chmod 444 DB."""
+    docs_dir = tmp_path / "ro_docs"
+    docs_dir.mkdir()
+    doc_file = docs_dir / "guide.md"
+    doc_file.write_text("Read-only database test guide.", encoding="utf-8")
+    db_file = tmp_path / "ro_cli.db"
+
+    res_idx = runner.invoke(
+        app, ["index", str(docs_dir), "--db", str(db_file)]
+    )
+    assert res_idx.exit_code == 0
+
+    db_file.chmod(0o444)
+    try:
+        res_status = runner.invoke(app, ["status", "--db", str(db_file)])
+        assert res_status.exit_code == 0
+        assert "Files Indexed" in res_status.stdout
+
+        res_query = runner.invoke(
+            app, ["query", "guide", "--db", str(db_file)]
+        )
+        assert res_query.exit_code == 0
+        assert "1 hits" in res_query.stdout
+
+        res_idx_dry = runner.invoke(
+            app, ["index", str(docs_dir), "--dry-run", "--db", str(db_file)]
+        )
+        assert res_idx_dry.exit_code == 0
+
+        res_prune_dry = runner.invoke(
+            app, ["prune", "--dry-run", "--db", str(db_file)]
+        )
+        assert res_prune_dry.exit_code == 0
+    finally:
+        db_file.chmod(0o666)

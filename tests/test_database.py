@@ -18,6 +18,7 @@ from hysearch.core.database import (
     get_connection,
     get_db_embed_dim,
     get_db_embed_model,
+    get_db_status,
     get_db_tokenizer,
     get_schema_version,
     get_stored_embed_dim,
@@ -271,3 +272,31 @@ def test_embed_model_meta_and_reinit() -> None:
     assert get_stored_embed_model(conn) == EMBED_MODEL_MPNET
     assert get_stored_embed_dim(conn) == 768
     conn.close()
+
+
+def test_read_only_connection_and_status(tmp_path: Path) -> None:
+    """Verify read_only connection and get_db_status on chmod 444 database."""
+    db_file = tmp_path / "ro_test.db"
+    with get_connection(db_file) as conn:
+        init_db(conn)
+
+    # Set database file to read-only (chmod 444)
+    db_file.chmod(0o444)
+    try:
+        status_data = get_db_status(db_file)
+        assert status_data["Files Indexed"] == 0
+        assert status_data["Total Chunks"] == 0
+
+        with (
+            get_connection(db_file, read_only=True) as ro_conn,
+            pytest.raises(sqlite3.OperationalError),
+        ):
+            ro_conn.execute("INSERT INTO meta (key, value) VALUES ('k', 'v');")
+
+        with (
+            get_connection(":memory:", read_only=True) as mem_ro,
+            pytest.raises(sqlite3.OperationalError),
+        ):
+            mem_ro.execute("CREATE TABLE t (id INTEGER);")
+    finally:
+        db_file.chmod(0o666)

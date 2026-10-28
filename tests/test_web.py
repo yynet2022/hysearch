@@ -311,3 +311,23 @@ def test_cli_server_command(indexed_db: Path, tmp_path: Path) -> None:
         )
         assert res_err.exit_code == 1
         assert "in use" in " ".join(res_err.stdout.split())
+
+
+def test_web_read_only_db(
+    indexed_db: Path, dummy_embedder: DummyEmbedder
+) -> None:
+    """Verify /api/status and /api/query succeed on chmod 444 database."""
+    indexed_db.chmod(0o444)
+    try:
+        web_app = create_app(db_path=indexed_db, embedder=dummy_embedder)
+        client = TestClient(web_app)
+
+        res_status = client.get("/api/status")
+        assert res_status.status_code == 200
+        assert res_status.json()["Files Indexed"] == 2
+
+        res_query = client.get("/api/query", params={"q": "Python"})
+        assert res_query.status_code == 200
+        assert res_query.json()["total_hits"] >= 1
+    finally:
+        indexed_db.chmod(0o666)

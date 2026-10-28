@@ -18,7 +18,6 @@ from hysearch.core.database import (
     get_db_embed_dim,
     get_db_embed_model,
     get_db_status,
-    init_db,
 )
 from hysearch.core.embedder import EmbedderProtocol, FastEmbedder
 from hysearch.core.models import SearchResponse
@@ -116,8 +115,7 @@ def create_app(
                 ),
             )
 
-        with get_connection(resolved_db) as conn:
-            init_db(conn)
+        with get_connection(resolved_db, read_only=True) as conn:
             active_embedder = (
                 get_cached_embedder(conn) if search_mode != "bm25" else None
             )

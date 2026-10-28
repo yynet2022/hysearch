@@ -249,3 +249,22 @@ def test_run_mcp_server_and_cli_command(
         res_err = runner.invoke(cli_app, ["mcp", "--db", str(indexed_db)])
         assert res_err.exit_code == 1
         assert "MCP stdio failure" in (res_err.stdout + res_err.stderr)
+
+
+def test_mcp_read_only_db(
+    indexed_db: Path, dummy_embedder: DummyEmbedder
+) -> None:
+    """Verify MCP status and query tools succeed on chmod 444 database."""
+    indexed_db.chmod(0o444)
+    try:
+        mcp = create_mcp_server(db_path=indexed_db, embedder=dummy_embedder)
+
+        res_status = asyncio.run(mcp.call_tool("status", {}))
+        status_data = json.loads(_extract_tool_text(res_status))
+        assert status_data["Files Indexed"] == 2
+
+        res_query = asyncio.run(mcp.call_tool("query", {"query": "Python"}))
+        query_data = json.loads(_extract_tool_text(res_query))
+        assert query_data["total_hits"] >= 1
+    finally:
+        indexed_db.chmod(0o666)

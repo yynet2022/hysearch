@@ -218,7 +218,7 @@ def index_cmd(
         ":memory:" if (dry_run and not db.exists()) else db
     )
 
-    with get_connection(conn_target) as conn:
+    with get_connection(conn_target, read_only=dry_run) as conn:
         stored_tok = get_stored_tokenizer(conn)
         stored_model = get_stored_embed_model(conn)
         try:
@@ -393,8 +393,7 @@ def query_cmd(
         )
         raise typer.Exit(code=1)
 
-    with get_connection(db) as conn:
-        init_db(conn)
+    with get_connection(db, read_only=True) as conn:
         try:
             response = search(
                 conn=conn,
@@ -515,8 +514,9 @@ def prune_cmd(
         if not output_json:
             print_pruned_file(file_path, dry_run=is_dry_run)
 
-    with get_connection(db) as conn:
-        init_db(conn)
+    with get_connection(db, read_only=dry_run) as conn:
+        if not dry_run:
+            init_db(conn)
         total_checked, pruned_files = prune_missing_files(
             conn=conn,
             dry_run=dry_run,

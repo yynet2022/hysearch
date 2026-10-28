@@ -102,11 +102,16 @@ DROP TABLE IF EXISTS vec_chunks;
 """
 
 
-def create_connection(db_path: PathLike) -> sqlite3.Connection:
+def create_connection(
+    db_path: PathLike,
+    read_only: bool = False,
+) -> sqlite3.Connection:
     """Create a new SQLite connection with foreign keys and sqlite-vec loaded.
 
     Args:
         db_path: Path to the SQLite database file, or ':memory:'.
+        read_only: If True, open the database in read-only mode and enforce
+            query_only PRAGMA.
 
     Returns:
         sqlite3.Connection: Configured connection with vector extension loaded.
@@ -115,8 +120,15 @@ def create_connection(db_path: PathLike) -> sqlite3.Connection:
         sqlite3.OperationalError: If extension loading fails or DB is locked.
     """
     path_str = str(db_path)
-    conn = sqlite3.connect(path_str)
-    conn.execute("PRAGMA foreign_keys = ON;")
+    if read_only and path_str != ":memory:":
+        uri = f"{Path(db_path).resolve().as_uri()}?mode=ro"
+        conn = sqlite3.connect(uri, uri=True)
+        conn.execute("PRAGMA query_only = ON;")
+    else:
+        conn = sqlite3.connect(path_str)
+        conn.execute("PRAGMA foreign_keys = ON;")
+        if read_only:
+            conn.execute("PRAGMA query_only = ON;")
     conn.enable_load_extension(True)
     sqlite_vec.load(conn)
     conn.enable_load_extension(False)
@@ -126,16 +138,18 @@ def create_connection(db_path: PathLike) -> sqlite3.Connection:
 @contextmanager
 def get_connection(
     db_path: PathLike,
+    read_only: bool = False,
 ) -> Generator[sqlite3.Connection, None, None]:
     """Context manager for SQLite connection to ensure proper closure.
 
     Args:
         db_path: Path to the SQLite database file or ':memory:'.
+        read_only: If True, open the database in read-only mode.
 
     Yields:
         sqlite3.Connection: Open database connection.
     """
-    conn = create_connection(db_path)
+    conn = create_connection(db_path, read_only=read_only)
     try:
         yield conn
     finally:
@@ -447,8 +461,7 @@ def get_db_status(db_path: PathLike) -> dict[str, Any]:
         "%Y-%m-%d %H:%M:%S"
     )
 
-    with get_connection(path) as conn:
-        init_db(conn)
+    with get_connection(path, read_only=True) as conn:
         active_tokenizer = get_db_tokenizer(conn)
         active_model = get_db_embed_model(conn)
         active_dim = get_db_embed_dim(conn)
