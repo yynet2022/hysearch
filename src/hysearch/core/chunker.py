@@ -145,9 +145,10 @@ def chunk_text(
 
     chunks: list[Chunk] = []
     start = 0
+    end = 0
     chunk_index = 0
 
-    while start < total_len:
+    while end < total_len:
         ideal_end = min(start + chunk_size, total_len)
 
         if ideal_end == total_len:
@@ -169,9 +170,6 @@ def chunk_text(
             )
         )
         chunk_index += 1
-
-        if end >= total_len:
-            break
 
         # 次の開始位置を算出
         next_start = max(start + 1, end - overlap)

@@ -241,7 +241,10 @@ def test_embed_model_meta_and_reinit() -> None:
     assert get_db_embed_model(conn) == DEFAULT_EMBED_MODEL
     assert get_db_embed_dim(conn) == DEFAULT_EMBED_DIM
 
-    # Legacy DB (has vec_chunks but no meta table) -> detected as default
+    # meta テーブルが存在し embed_model キーが未登録のレガシー DB の判定
+    conn.execute(
+        "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);"
+    )
     conn.execute(
         "CREATE VIRTUAL TABLE vec_chunks USING vec0("
         "id INTEGER PRIMARY KEY, embedding float[384]);"

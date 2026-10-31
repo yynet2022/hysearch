@@ -237,7 +237,11 @@ def test_prune_missing_files(
     # 物理ファイルを削除
     file_remove.unlink()
 
-    # 1. dry-run モードの検証
+    # 1. dry-run モードの検証（on_missing 省略時および指定時）
+    total_no_cb, dry_no_cb = prune_missing_files(memory_db, dry_run=True)
+    assert total_no_cb == 2
+    assert len(dry_no_cb) == 1
+
     callback_calls: list[tuple[str, bool]] = []
 
     def on_missing(path_str: str, dry_run: bool) -> None:

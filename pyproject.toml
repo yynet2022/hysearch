@@ -108,4 +108,4 @@ ignore_missing_imports = true
 minversion = "8.0"
 testpaths = ["tests"]
 pythonpath = ["src"]
-addopts = "-ra -q --cov=hysearch --cov-report=term-missing"
+addopts = "-ra -q --color=no --cov=src --cov-branch --cov-report=term-missing"

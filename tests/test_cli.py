@@ -341,12 +341,16 @@ def test_cli_index_with_ext_option(tmp_path: Path) -> None:
 
 
 def test_parse_extension_filters_empty() -> None:
-    """Verify parse_extension_filters returns None on empty or whitespace."""
+    """Verify parse_extension_filters handles empty inputs and duplicates."""
     from hysearch.cli.main import parse_extension_filters
 
     assert parse_extension_filters(None) is None
     assert parse_extension_filters([]) is None
     assert parse_extension_filters(["", "  "]) is None
+    assert parse_extension_filters([".py, py", "*.PY, .md"]) == [
+        ".py",
+        ".md",
+    ]
 
 
 def test_cli_prune(tmp_path: Path) -> None:
@@ -551,12 +555,18 @@ def test_cli_model_options_and_errors(tmp_path: Path) -> None:
 
 
 def test_parse_exclude_dirs_empty() -> None:
-    """Verify parse_exclude_dirs returns None on empty or whitespace input."""
+    """Verify parse_exclude_dirs handles empty inputs and duplicates."""
     from hysearch.cli.main import parse_exclude_dirs
 
     assert parse_exclude_dirs(None) is None
     assert parse_exclude_dirs([]) is None
     assert parse_exclude_dirs(["", "  ", "./"]) is None
+    assert parse_exclude_dirs(
+        [".venv, ./.venv/", r"build\sub, build/sub"]
+    ) == [
+        ".venv",
+        "build/sub",
+    ]
 
 
 def test_cli_index_exclude_dir_and_dry_run(tmp_path: Path) -> None:

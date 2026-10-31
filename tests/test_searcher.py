@@ -45,9 +45,23 @@ def test_extract_snippet_fallback_no_match() -> None:
     assert snippet.endswith("...")
     assert len(snippet) <= 30
 
+    # クエリが空文字の場合も先頭から切り出されること
+    snippet_empty_q = extract_snippet(long_content, query="", max_length=30)
+    assert snippet_empty_q == snippet
+
 
 def test_extract_snippet_match_at_end_of_text() -> None:
-    """Verify snippet window adjustment when match is near text end."""
+    """Verify snippet window adjustment when match is near start or end."""
+    # 文頭付近でマッチする場合（先頭に ... が付かず末尾のみ ... が付く）
+    start_content = "starttarget " + ("suffix " * 20)
+    start_snippet = extract_snippet(
+        start_content, query="starttarget", max_length=35
+    )
+    assert not start_snippet.startswith("...")
+    assert start_snippet.endswith("...")
+    assert "starttarget" in start_snippet
+
+    # 文末付近でマッチする場合（先頭のみ ... が付き末尾には ... が付かない）
     content = ("prefix " * 20) + "endtarget"
     snippet = extract_snippet(content, query="endtarget", max_length=35)
     assert snippet.startswith("...")
