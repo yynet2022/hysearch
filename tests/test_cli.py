@@ -1,6 +1,10 @@
 """Tests for CLI commands using typer.testing.CliRunner."""
 
+import importlib
 import json
+import runpy
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -679,3 +683,30 @@ def test_cli_read_only_db_operations(tmp_path: Path) -> None:
         assert res_prune_dry.exit_code == 0
     finally:
         db_file.chmod(0o666)
+
+
+def test_main_module_execution(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify running hysearch as a module (__main__.py)."""
+    monkeypatch.setattr(sys, "argv", ["hysearch", "--help"])
+    with pytest.raises(SystemExit) as exc_info:
+        runpy.run_module("hysearch", run_name="__main__")
+    assert exc_info.value.code == 0
+
+
+def test_main_module_subprocess() -> None:
+    """Verify running python -m hysearch in a separate process."""
+    res = subprocess.run(
+        [sys.executable, "-m", "hysearch", "--help"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert res.returncode == 0
+    assert "Usage: hysearch" in res.stdout
+
+
+def test_main_module_import() -> None:
+    """Verify importing __main__.py directly without module execution."""
+    import hysearch.__main__
+
+    importlib.reload(hysearch.__main__)

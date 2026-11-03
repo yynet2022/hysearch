@@ -81,6 +81,7 @@ hysearch/
 ├── src/
 │   └── hysearch/
 │       ├── __init__.py
+│       ├── __main__.py        # python -m hysearch 実行用エントリーポイント
 │       ├── py.typed
 │       ├── cli/
 │       │   ├── __init__.py

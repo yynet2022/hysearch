@@ -93,6 +93,8 @@ sudo chmod 644 /etc/profile.d/hysearch.sh
 
 ## 使い方 (CLI コマンド)
 
+`hysearch` は直接 `hysearch <command>` として呼び出せるほか、モジュールとして `python -m hysearch <command>` で実行することも可能です（Windows の Smart App Control が有効な環境で `hysearch.exe` がブロックされる場合や、特定環境でスクリプト経由で呼び出す場合にも推奨されます）。以下のコマンド例はすべて `python -m hysearch` に置き換えて実行できます。
+
 ### 1. ドキュメントのインデックス作成・更新 (`index`)
 指定ディレクトリ配下のドキュメントおよびソースコード（デフォルト: `.md`, `.markdown`, `.txt`, `.py`, `.js`, `.ts`）を再帰的に走査し、インデックスを作成します。SHA-256 ハッシュによる差分検知を行い、変更のあったファイルのみ更新します。
 
