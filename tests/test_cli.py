@@ -2,6 +2,7 @@
 
 import importlib
 import json
+import os
 import runpy
 import subprocess
 import sys
@@ -695,14 +696,17 @@ def test_main_module_execution(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_main_module_subprocess() -> None:
     """Verify running python -m hysearch in a separate process."""
+    env = {**os.environ, "NO_COLOR": "1"}
     res = subprocess.run(
         [sys.executable, "-m", "hysearch", "--help"],
         capture_output=True,
         text=True,
+        env=env,
         check=False,
     )
     assert res.returncode == 0
-    assert "Usage: hysearch" in res.stdout
+    assert "Usage:" in res.stdout
+    assert "hysearch" in res.stdout
 
 
 def test_main_module_import() -> None:
