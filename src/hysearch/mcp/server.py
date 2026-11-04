@@ -6,6 +6,7 @@ BM25, or vector search queries with full metadata filtering.
 """
 
 import json
+import logging
 import sqlite3
 from pathlib import Path
 
@@ -23,6 +24,9 @@ from hysearch.core.database import (
 )
 from hysearch.core.embedder import EmbedderProtocol, FastEmbedder
 from hysearch.core.searcher import search, validate_and_parse_search_params
+
+# ロガーの初期化
+logger = logging.getLogger(__name__)
 
 # 読み取り専用ツールのMCPアノテーション定義
 READ_ONLY_ANNOTATIONS = ToolAnnotations(
@@ -82,8 +86,14 @@ def create_mcp_server(
                 f"Database file '{resolved_db}' does not exist. "
                 "Run 'hysearch index' first."
             )
-        status_data = get_db_status(resolved_db)
-        return json.dumps(status_data, ensure_ascii=False, indent=2)
+        try:
+            status_data = get_db_status(resolved_db)
+            return json.dumps(status_data, ensure_ascii=False, indent=2)
+        except ToolError:
+            raise
+        except Exception as exc:
+            logger.exception("Status failed")
+            raise ToolError(f"Status failed ({type(exc).__name__}).") from exc
 
     @mcp.tool(
         name="query",
@@ -130,11 +140,13 @@ def create_mcp_server(
                 "Run 'hysearch index' first."
             )
 
-        with get_connection(resolved_db, read_only=True) as conn:
-            active_embedder = (
-                get_cached_embedder(conn) if search_mode != "bm25" else None
-            )
-            try:
+        try:
+            with get_connection(resolved_db, read_only=True) as conn:
+                active_embedder = (
+                    get_cached_embedder(conn)
+                    if search_mode != "bm25"
+                    else None
+                )
                 response = search(
                     conn=conn,
                     query=query,
@@ -147,10 +159,22 @@ def create_mcp_server(
                     since=since_dt,
                     until=until_dt,
                 )
-            except (ValueError, RuntimeError) as exc:
-                raise ToolError(str(exc)) from exc
-
-        return response.model_dump_json(indent=2)
+                return response.model_dump_json(indent=2)
+        except ToolError:
+            raise
+        except Exception as exc:
+            logger.exception("Search failed")
+            if isinstance(exc, sqlite3.OperationalError) and exc.args == (
+                "too many SQL variables",
+            ):
+                msg = (
+                    "Search failed (OperationalError): too many SQL variables."
+                )
+            elif isinstance(exc, (ValueError, RuntimeError)):
+                msg = str(exc)
+            else:
+                msg = f"Search failed ({type(exc).__name__})."
+            raise ToolError(msg) from exc
 
     return mcp
 

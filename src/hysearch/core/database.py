@@ -296,6 +296,41 @@ def get_db_embed_dim(conn: sqlite3.Connection) -> int:
     return get_stored_embed_dim(conn) or DEFAULT_EMBED_DIM
 
 
+def get_sqlite_diagnostics(conn: sqlite3.Connection) -> dict[str, Any]:
+    """Inspect SQLite runtime capabilities, variable limits, and extensions.
+
+    Args:
+        conn: Open SQLite connection.
+
+    Returns:
+        dict[str, Any]: Dictionary containing SQLite version, variable limit,
+            and feature availability.
+    """
+    version = sqlite3.sqlite_version
+    version_info = sqlite3.sqlite_version_info
+
+    # Python 3.11+ では conn.getlimit が利用可能
+    var_limit: int | None = None
+    if hasattr(conn, "getlimit") and hasattr(
+        sqlite3, "SQLITE_LIMIT_VARIABLE_NUMBER"
+    ):
+        try:
+            var_limit = int(
+                conn.getlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER)
+            )
+        except (AttributeError, ValueError):
+            var_limit = None
+
+    # FTS5 trigram は SQLite 3.34.0 (2020-12-01) 以降でサポート
+    has_trigram = version_info >= (3, 34, 0)
+
+    return {
+        "sqlite_version": version,
+        "variable_limit": var_limit,
+        "supports_trigram": has_trigram,
+    }
+
+
 def init_db(
     conn: sqlite3.Connection,
     embed_dim: int | None = None,
@@ -388,6 +423,11 @@ def init_db(
             conn.executescript(DROP_FTS_SQL)
 
         if active_tokenizer == TOKENIZER_TRIGRAM:
+            if sqlite3.sqlite_version_info < (3, 34, 0):
+                raise RuntimeError(
+                    f"SQLite {sqlite3.sqlite_version} does not support FTS5 "
+                    "trigram tokenizer (requires SQLite >= 3.34.0)."
+                )
             conn.executescript(INIT_TRIGRAM_FTS_SQL)
         else:
             conn.executescript(INIT_UNICODE61_FTS_SQL)
@@ -465,13 +505,15 @@ def get_db_status(db_path: PathLike) -> dict[str, Any]:
         active_tokenizer = get_db_tokenizer(conn)
         active_model = get_db_embed_model(conn)
         active_dim = get_db_embed_dim(conn)
+        diag = get_sqlite_diagnostics(conn)
         file_count = conn.execute("SELECT COUNT(*) FROM files;").fetchone()[0]
         chunk_count = conn.execute("SELECT COUNT(*) FROM chunks;").fetchone()[
             0
         ]
 
-    return {
+    status_dict: dict[str, Any] = {
         "Database Path": str(path.resolve()),
+        "SQLite Version": diag["sqlite_version"],
         "Tokenizer": active_tokenizer,
         "Embedding Model": active_model,
         "Embedding Dim": active_dim,
@@ -480,3 +522,7 @@ def get_db_status(db_path: PathLike) -> dict[str, Any]:
         "Database Size": f"{size_kb:.2f} KB",
         "Last Modified": mod_time,
     }
+    if diag["variable_limit"] is not None:
+        status_dict["SQL Variable Limit"] = diag["variable_limit"]
+
+    return status_dict

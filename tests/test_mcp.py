@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import sqlite3
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -268,3 +269,103 @@ def test_mcp_read_only_db(
         assert query_data["total_hits"] >= 1
     finally:
         indexed_db.chmod(0o666)
+
+
+def test_mcp_error_sanitization_and_logging(
+    indexed_db: Path,
+    dummy_embedder: DummyEmbedder,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Verify MCP tools sanitize errors and record logger.exception."""
+    mcp = create_mcp_server(db_path=indexed_db, embedder=dummy_embedder)
+
+    # 1. status_tool with database error
+    with (
+        patch(
+            "hysearch.mcp.server.get_db_status",
+            side_effect=sqlite3.OperationalError("disk I/O error"),
+        ),
+        caplog.at_level("ERROR", logger="hysearch.mcp.server"),
+        pytest.raises(
+            ToolError,
+            match=r"Status failed \(OperationalError\)\.",
+        ),
+    ):
+        asyncio.run(mcp.call_tool("status", {}))
+    assert "Status failed" in caplog.text
+
+    caplog.clear()
+
+    # 2. query_tool with "too many SQL variables"
+    with (
+        patch(
+            "hysearch.mcp.server.search",
+            side_effect=sqlite3.OperationalError("too many SQL variables"),
+        ),
+        caplog.at_level("ERROR", logger="hysearch.mcp.server"),
+        pytest.raises(
+            ToolError,
+            match=(
+                r"Search failed \(OperationalError\): "
+                r"too many SQL variables\."
+            ),
+        ),
+    ):
+        asyncio.run(mcp.call_tool("query", {"query": "Python"}))
+    assert "Search failed" in caplog.text
+
+    caplog.clear()
+
+    # 3. query_tool with unknown database error (internal error sanitized)
+    with (
+        patch(
+            "hysearch.mcp.server.search",
+            side_effect=sqlite3.DatabaseError("sensitive table internal info"),
+        ),
+        caplog.at_level("ERROR", logger="hysearch.mcp.server"),
+        pytest.raises(
+            ToolError,
+            match=r"Search failed \(DatabaseError\)\.",
+        ),
+    ):
+        asyncio.run(mcp.call_tool("query", {"query": "Python"}))
+    assert "Search failed" in caplog.text
+    assert "sensitive table internal info" not in caplog.records[-1].message
+
+    caplog.clear()
+
+    # 4. query_tool with ValueError during search execution
+    with (
+        patch(
+            "hysearch.mcp.server.search",
+            side_effect=ValueError("Custom validation error"),
+        ),
+        caplog.at_level("ERROR", logger="hysearch.mcp.server"),
+        pytest.raises(
+            ToolError,
+            match="Custom validation error",
+        ),
+    ):
+        asyncio.run(mcp.call_tool("query", {"query": "Python"}))
+    assert "Search failed" in caplog.text
+
+    caplog.clear()
+
+    # 5. status_tool and query_tool propagate existing ToolError directly
+    with (
+        patch(
+            "hysearch.mcp.server.get_db_status",
+            side_effect=ToolError("Pre-existing status ToolError"),
+        ),
+        pytest.raises(ToolError, match="Pre-existing status ToolError"),
+    ):
+        asyncio.run(mcp.call_tool("status", {}))
+
+    with (
+        patch(
+            "hysearch.mcp.server.search",
+            side_effect=ToolError("Pre-existing search ToolError"),
+        ),
+        pytest.raises(ToolError, match="Pre-existing search ToolError"),
+    ):
+        asyncio.run(mcp.call_tool("query", {"query": "Python"}))

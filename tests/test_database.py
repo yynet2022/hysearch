@@ -21,6 +21,7 @@ from hysearch.core.database import (
     get_db_status,
     get_db_tokenizer,
     get_schema_version,
+    get_sqlite_diagnostics,
     get_stored_embed_dim,
     get_stored_embed_model,
     get_stored_tokenizer,
@@ -303,3 +304,68 @@ def test_read_only_connection_and_status(tmp_path: Path) -> None:
             mem_ro.execute("CREATE TABLE t (id INTEGER);")
     finally:
         db_file.chmod(0o666)
+
+
+def test_sqlite_diagnostics_and_limits(
+    memory_db: sqlite3.Connection,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Verify get_sqlite_diagnostics returns runtime capabilities."""
+    diag = get_sqlite_diagnostics(memory_db)
+    assert "sqlite_version" in diag
+    assert "supports_trigram" in diag
+    assert diag["supports_trigram"] is True
+
+    # 1. conn.getlimit が正常に整数を返すケース
+    class MockLimitConn:
+        def getlimit(self, category: int) -> int:
+            return 32766
+
+    monkeypatch.setattr(
+        sqlite3, "SQLITE_LIMIT_VARIABLE_NUMBER", 9, raising=False
+    )
+    diag_with_limit = get_sqlite_diagnostics(
+        MockLimitConn()  # type: ignore[arg-type]
+    )
+    assert diag_with_limit["variable_limit"] == 32766
+
+    # 2. conn.getlimit がエラーを起こす場合の例外処理も検証
+    class DummyErrorConn:
+        def getlimit(self, category: int) -> int:
+            raise ValueError("Unsupported limit category")
+
+    dummy_diag = get_sqlite_diagnostics(
+        DummyErrorConn()  # type: ignore[arg-type]
+    )
+    assert dummy_diag["variable_limit"] is None
+
+    # 3. get_db_status で variable_limit が存在する場合の出力確認
+    db_file = tmp_path / "status_diag.db"
+    with get_connection(db_file) as conn:
+        init_db(conn)
+    with monkeypatch.context() as m:
+        m.setattr(
+            "hysearch.core.database.get_sqlite_diagnostics",
+            lambda conn: {
+                "sqlite_version": "3.45.0",
+                "variable_limit": 32766,
+                "supports_trigram": True,
+            },
+        )
+        status = get_db_status(db_file)
+        assert status["SQL Variable Limit"] == 32766
+        assert status["SQLite Version"] == "3.45.0"
+
+
+def test_init_db_old_sqlite_trigram_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify init_db raises RuntimeError on SQLite < 3.34 with trigram."""
+    conn = create_connection(":memory:")
+    monkeypatch.setattr(sqlite3, "sqlite_version_info", (3, 26, 0))
+    monkeypatch.setattr(sqlite3, "sqlite_version", "3.26.0")
+
+    with pytest.raises(RuntimeError, match="does not support FTS5 trigram"):
+        init_db(conn, tokenizer="trigram")
+    conn.close()
