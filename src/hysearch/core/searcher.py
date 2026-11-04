@@ -19,6 +19,7 @@ from hysearch.core.config import (
     DEFAULT_RRF_K,
     DEFAULT_WEIGHT_BM25,
     DEFAULT_WEIGHT_VEC,
+    SQL_BATCH_SIZE,
     TOKENIZER_TRIGRAM,
 )
 from hysearch.core.database import (
@@ -161,12 +162,18 @@ def get_filtered_chunk_ids(
     if not matching_file_ids:
         return []
 
-    placeholders = ",".join("?" for _ in matching_file_ids)
-    cursor.execute(
-        f"SELECT id FROM chunks WHERE file_id IN ({placeholders});",
-        matching_file_ids,
-    )
-    return [row[0] for row in cursor.fetchall()]
+    # matching_file_ids が多数の場合に備えてバッチ分割してチャンクIDを取得
+    chunk_ids: list[int] = []
+    for i in range(0, len(matching_file_ids), SQL_BATCH_SIZE):
+        batch = matching_file_ids[i : i + SQL_BATCH_SIZE]
+        placeholders = ",".join("?" for _ in batch)
+        cursor.execute(
+            f"SELECT id FROM chunks WHERE file_id IN ({placeholders});",
+            batch,
+        )
+        chunk_ids.extend(row[0] for row in cursor.fetchall())
+
+    return chunk_ids
 
 
 def _clean_fts_query(
@@ -212,32 +219,43 @@ def search_bm25(
     cursor = conn.cursor()
     try:
         if target_ids is not None:
-            placeholders = ",".join("?" for _ in target_ids)
-            cursor.execute(
-                f"""
-                SELECT rowid
-                FROM fts_chunks
-                WHERE fts_chunks MATCH ? AND rowid IN ({placeholders})
-                ORDER BY rank
-                LIMIT ?;
-                """,
-                [fts_query, *target_ids, limit],
-            )
-        else:
-            cursor.execute(
-                """
-                SELECT rowid
-                FROM fts_chunks
-                WHERE fts_chunks MATCH ?
-                ORDER BY rank
-                LIMIT ?;
-                """,
-                (fts_query, limit),
-            )
+            # SQL変数上限対策のため target_ids をバッチ分割して検索し、
+            # (rank, rowid) 昇順でソートして上位 limit 件を統合する
+            candidates: list[tuple[int, float]] = []
+            for i in range(0, len(target_ids), SQL_BATCH_SIZE):
+                batch = target_ids[i : i + SQL_BATCH_SIZE]
+                placeholders = ",".join("?" for _ in batch)
+                cursor.execute(
+                    f"""
+                    SELECT rowid, rank
+                    FROM fts_chunks
+                    WHERE fts_chunks MATCH ? AND rowid IN ({placeholders})
+                    ORDER BY rank
+                    LIMIT ?;
+                    """,
+                    [fts_query, *batch, limit],
+                )
+                candidates.extend(cursor.fetchall())
+            candidates.sort(key=lambda item: (item[1], item[0]))
+            return [cid for cid, _ in candidates[:limit]]
+
+        cursor.execute(
+            """
+            SELECT rowid
+            FROM fts_chunks
+            WHERE fts_chunks MATCH ?
+            ORDER BY rank
+            LIMIT ?;
+            """,
+            (fts_query, limit),
+        )
         return [row[0] for row in cursor.fetchall()]
-    except sqlite3.OperationalError:
-        # 構文エラー等の場合は空リストを返しベクトル検索に委ねる
-        return []
+    except sqlite3.OperationalError as exc:
+        err_msg = str(exc).lower()
+        # FTS5 構文エラー等、ユーザー入力起因のエラーのみ空リストとして扱う
+        if "fts5:" in err_msg or "syntax error" in err_msg:
+            return []
+        raise
 
 
 def search_vector(
@@ -277,26 +295,35 @@ def search_vector(
 
     cursor = conn.cursor()
     if target_ids is not None:
-        placeholders = ",".join("?" for _ in target_ids)
-        cursor.execute(
-            f"""
-            SELECT id
-            FROM vec_chunks
-            WHERE embedding MATCH ? AND k = ? AND id IN ({placeholders})
-            ORDER BY distance;
-            """,
-            [serialized, k_val, *target_ids],
-        )
-    else:
-        cursor.execute(
-            """
-            SELECT id
-            FROM vec_chunks
-            WHERE embedding MATCH ? AND k = ?
-            ORDER BY distance;
-            """,
-            (serialized, k_val),
-        )
+        # SQL変数上限対策のため target_ids をバッチ分割して検索し、
+        # (distance, id) 昇順でソートして上位 limit 件を統合する
+        candidates: list[tuple[int, float]] = []
+        for i in range(0, len(target_ids), SQL_BATCH_SIZE):
+            batch = target_ids[i : i + SQL_BATCH_SIZE]
+            k_batch = min(limit, len(batch))
+            placeholders = ",".join("?" for _ in batch)
+            cursor.execute(
+                f"""
+                SELECT id, distance
+                FROM vec_chunks
+                WHERE embedding MATCH ? AND k = ? AND id IN ({placeholders})
+                ORDER BY distance;
+                """,
+                [serialized, k_batch, *batch],
+            )
+            candidates.extend(cursor.fetchall())
+        candidates.sort(key=lambda item: (item[1], item[0]))
+        return [cid for cid, _ in candidates[:limit]]
+
+    cursor.execute(
+        """
+        SELECT id
+        FROM vec_chunks
+        WHERE embedding MATCH ? AND k = ?
+        ORDER BY distance;
+        """,
+        (serialized, k_val),
+    )
     return [row[0] for row in cursor.fetchall()]
 
 
@@ -442,20 +469,24 @@ def search(
     )[:top_k]
 
     selected_ids = [item[0] for item in sorted_items]
-    placeholders = ",".join("?" for _ in selected_ids)
 
-    # チャンク情報とファイルパスを取得
+    # チャンク情報とファイルパスを取得 (極端な top 指定に備えてバッチ化)
+    chunk_data: dict[int, tuple[int, str, int, str]] = {}
     cursor = conn.cursor()
-    cursor.execute(
-        f"""
-        SELECT c.id, f.path, c.chunk_index, c.content
-        FROM chunks c
-        JOIN files f ON c.file_id = f.id
-        WHERE c.id IN ({placeholders});
-        """,
-        selected_ids,
-    )
-    chunk_data = {row[0]: row for row in cursor.fetchall()}
+    for i in range(0, len(selected_ids), SQL_BATCH_SIZE):
+        batch = selected_ids[i : i + SQL_BATCH_SIZE]
+        placeholders = ",".join("?" for _ in batch)
+        cursor.execute(
+            f"""
+            SELECT c.id, f.path, c.chunk_index, c.content
+            FROM chunks c
+            JOIN files f ON c.file_id = f.id
+            WHERE c.id IN ({placeholders});
+            """,
+            batch,
+        )
+        for row in cursor.fetchall():
+            chunk_data[row[0]] = row
 
     hits: list[SearchHit] = []
     for cid in selected_ids:

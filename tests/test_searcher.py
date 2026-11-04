@@ -176,12 +176,26 @@ def test_search_modes(
 
 
 def test_search_bm25_operational_error() -> None:
-    """Verify search_bm25 returns empty list when table is missing."""
+    """Verify search_bm25 re-raises database operational errors."""
     conn = sqlite3.connect(":memory:")
-    # fts_chunks 未作成のため OperationalError が発生し [] が返る
-    results = search_bm25(conn, "keyword")
-    assert results == []
+    # fts_chunks 未作成などの DB 障害時は OperationalError が再送出されること
+    with pytest.raises(sqlite3.OperationalError, match="no such table"):
+        search_bm25(conn, "keyword")
     conn.close()
+
+
+def test_search_bm25_syntax_error_fallback(
+    memory_db: sqlite3.Connection,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify search_bm25 safely returns empty list on FTS syntax error."""
+    # FTS5 構文エラーをシミュレート
+    monkeypatch.setattr(
+        "hysearch.core.searcher._clean_fts_query",
+        lambda query, tokenizer_name: "AND OR NOT *",
+    )
+    results = search_bm25(memory_db, "invalid syntax query")
+    assert results == []
 
 
 def test_search_skips_missing_chunk_in_data(
@@ -367,3 +381,125 @@ def test_search_bm25_and_vector_target_ids(
         )
         == []
     )
+
+
+def test_search_large_target_ids_batching(
+    memory_db: sqlite3.Connection,
+    dummy_embedder: DummyEmbedder,
+) -> None:
+    """Verify batching works correctly with large number of target IDs."""
+    import sqlite_vec
+
+    num_chunks = 1200
+    with memory_db:
+        memory_db.execute(
+            "INSERT INTO files (id, path, hash, chunk_count) "
+            "VALUES (100, '/path/doc.md', 'hash1', ?);",
+            (num_chunks,),
+        )
+        chunk_rows = [
+            (
+                cid,
+                100,
+                cid,
+                f"Content chunk {cid} with special keyword"
+                if cid in (10, 550, 1150)
+                else f"Content chunk {cid}",
+                0,
+                10,
+            )
+            for cid in range(1, num_chunks + 1)
+        ]
+        memory_db.executemany(
+            "INSERT INTO chunks (id, file_id, chunk_index, content, "
+            "start_char, end_char) VALUES (?, ?, ?, ?, ?, ?);",
+            chunk_rows,
+        )
+        # FTS5 にも同期
+        fts_rows = [(r[0], r[3]) for r in chunk_rows]
+        memory_db.executemany(
+            "INSERT INTO fts_chunks (rowid, content) VALUES (?, ?);",
+            fts_rows,
+        )
+        # vec_chunks にも登録 (cid=10, 550, 1150 はクエリベクトルと同一)
+        query_vec = dummy_embedder.embed_query("special")
+        diff_vec = [0.0] * len(query_vec)
+        vec_rows = [
+            (
+                cid,
+                sqlite_vec.serialize_float32(
+                    query_vec if cid in (10, 550, 1150) else diff_vec
+                ),
+            )
+            for cid in range(1, num_chunks + 1)
+        ]
+        memory_db.executemany(
+            "INSERT INTO vec_chunks (id, embedding) VALUES (?, ?);",
+            vec_rows,
+        )
+
+    target_ids = list(range(1, num_chunks + 1))
+
+    # 1. search_bm25 with 1200 target_ids (exceeds SQL_BATCH_SIZE=500)
+    bm25_res = search_bm25(
+        memory_db, "special", limit=10, target_ids=target_ids
+    )
+    assert len(bm25_res) == 3
+    assert set(bm25_res) == {10, 550, 1150}
+
+    # 2. search_vector with 1200 target_ids
+    vec_res = search_vector(
+        memory_db,
+        "special",
+        embedder=dummy_embedder,
+        limit=10,
+        target_ids=target_ids,
+    )
+    assert len(vec_res) == 10
+    # 最も類似度の高い 3 件が先頭に来ること
+    assert set(vec_res[:3]) == {10, 550, 1150}
+
+    # 3. search (hybrid) with 1200 target_ids
+    res = search(
+        conn=memory_db,
+        query="special",
+        embedder=dummy_embedder,
+        mode="hybrid",
+        top_k=5,
+        path_filter="/path/doc.md",
+    )
+    assert res.total_hits == 5
+    top_3_ids = [h.chunk_id for h in res.hits[:3]]
+    assert set(top_3_ids) == {10, 550, 1150}
+
+
+def test_get_filtered_chunk_ids_large_files_batching(
+    memory_db: sqlite3.Connection,
+) -> None:
+    """Verify get_filtered_chunk_ids handles >500 matching files."""
+    num_files = 1200
+    with memory_db:
+        file_rows = [
+            (fid, f"/repo/dir/doc_{fid}.txt", f"hash_{fid}", 1, 1000.0)
+            for fid in range(1, num_files + 1)
+        ]
+        memory_db.executemany(
+            "INSERT INTO files (id, path, hash, chunk_count, mtime) "
+            "VALUES (?, ?, ?, ?, ?);",
+            file_rows,
+        )
+        chunk_rows = [
+            (fid, fid, 0, f"Chunk {fid}", 0, 10)
+            for fid in range(1, num_files + 1)
+        ]
+        memory_db.executemany(
+            "INSERT INTO chunks (id, file_id, chunk_index, content, "
+            "start_char, end_char) VALUES (?, ?, ?, ?, ?, ?);",
+            chunk_rows,
+        )
+
+    # path_filter で全 1200 件がマッチ
+    chunk_ids = get_filtered_chunk_ids(memory_db, path_filter="/repo/dir")
+    assert chunk_ids is not None
+    assert len(chunk_ids) == num_files
+    assert chunk_ids == list(range(1, num_files + 1))

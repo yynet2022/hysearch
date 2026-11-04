@@ -77,3 +77,6 @@ VALID_TOKENIZERS: tuple[str, ...] = (
 DEFAULT_SERVER_HOST: str = "127.0.0.1"
 DEFAULT_SERVER_PORT: int = 8888
 MAX_PORT_SEARCH_TRIES: int = 100
+
+# SQL 変数展開の安全なバッチサイズ (SQLite の引数上限対策)
+SQL_BATCH_SIZE: int = 500
