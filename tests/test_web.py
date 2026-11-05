@@ -1,10 +1,12 @@
 """Tests for the FastAPI web application, port resolution, and server CLI."""
 
 import socket
+import sqlite3
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from typer.testing import CliRunner
 
@@ -331,3 +333,77 @@ def test_web_read_only_db(
         assert res_query.json()["total_hits"] >= 1
     finally:
         indexed_db.chmod(0o666)
+
+
+def test_web_error_sanitization_and_logging(
+    indexed_db: Path,
+    dummy_embedder: DummyEmbedder,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Verify web endpoints sanitize internal errors and log exceptions."""
+    web_app = create_app(db_path=indexed_db, embedder=dummy_embedder)
+    client = TestClient(web_app)
+
+    # 1. /api/status error
+    with (
+        patch(
+            "hysearch.web.app.get_db_status",
+            side_effect=sqlite3.OperationalError("disk I/O error"),
+        ),
+        caplog.at_level("ERROR", logger="hysearch.web.app"),
+    ):
+        res_status = client.get("/api/status")
+    assert res_status.status_code == 500
+    assert res_status.json()["detail"] == "Status failed (OperationalError)."
+    assert "Web status failed" in caplog.text
+
+    caplog.clear()
+
+    # 2. /api/query error with "too many SQL variables"
+    with (
+        patch(
+            "hysearch.web.app.search",
+            side_effect=sqlite3.OperationalError("too many SQL variables"),
+        ),
+        caplog.at_level("ERROR", logger="hysearch.web.app"),
+    ):
+        res_vars = client.get("/api/query", params={"q": "Python"})
+    assert res_vars.status_code == 500
+    assert (
+        res_vars.json()["detail"]
+        == "Search failed (OperationalError): too many SQL variables."
+    )
+    assert "Web search failed" in caplog.text
+
+    caplog.clear()
+
+    # 3. /api/query error with unknown database error
+    with (
+        patch(
+            "hysearch.web.app.search",
+            side_effect=sqlite3.DatabaseError("sensitive table info"),
+        ),
+        caplog.at_level("ERROR", logger="hysearch.web.app"),
+    ):
+        res_db = client.get("/api/query", params={"q": "Python"})
+    assert res_db.status_code == 500
+    assert res_db.json()["detail"] == "Search failed (DatabaseError)."
+    assert "sensitive table info" not in res_db.text
+    assert "Web search failed" in caplog.text
+
+    # 4. /api/status and /api/query propagate existing HTTPException directly
+    with patch(
+        "hysearch.web.app.get_db_status",
+        side_effect=HTTPException(status_code=503, detail="Service busy"),
+    ):
+        res_http_status = client.get("/api/status")
+    assert res_http_status.status_code == 503
+    assert res_http_status.json()["detail"] == "Service busy"
+
+    with patch(
+        "hysearch.web.app.search",
+        side_effect=HTTPException(status_code=503, detail="Search busy"),
+    ):
+        res_http_query = client.get("/api/query", params={"q": "Python"})
+    assert res_http_query.status_code == 503
+    assert res_http_query.json()["detail"] == "Search busy"

@@ -4,6 +4,7 @@ This module provides endpoints for serving the single-page browser UI,
 inspecting database status, and running hybrid/BM25/vector search queries.
 """
 
+import logging
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -24,6 +25,7 @@ from hysearch.core.models import SearchResponse
 from hysearch.core.searcher import search, validate_and_parse_search_params
 
 _TEMPLATE_PATH = Path(__file__).parent / "templates" / "index.html"
+logger = logging.getLogger(__name__)
 
 
 def create_app(
@@ -74,7 +76,16 @@ def create_app(
                     "Run 'hysearch index' first."
                 ),
             )
-        return get_db_status(resolved_db)
+        try:
+            return get_db_status(resolved_db)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.exception("Web status failed")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Status failed ({type(exc).__name__}).",
+            ) from exc
 
     @app.get("/api/query", response_model=SearchResponse)
     def api_query(
@@ -115,11 +126,13 @@ def create_app(
                 ),
             )
 
-        with get_connection(resolved_db, read_only=True) as conn:
-            active_embedder = (
-                get_cached_embedder(conn) if search_mode != "bm25" else None
-            )
-            try:
+        try:
+            with get_connection(resolved_db, read_only=True) as conn:
+                active_embedder = (
+                    get_cached_embedder(conn)
+                    if search_mode != "bm25"
+                    else None
+                )
                 return search(
                     conn=conn,
                     query=q,
@@ -132,7 +145,20 @@ def create_app(
                     since=since_dt,
                     until=until_dt,
                 )
-            except (ValueError, RuntimeError) as exc:
-                raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except HTTPException:
+            raise
+        except (ValueError, RuntimeError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:
+            logger.exception("Web search failed")
+            if isinstance(exc, sqlite3.OperationalError) and exc.args == (
+                "too many SQL variables",
+            ):
+                detail = (
+                    "Search failed (OperationalError): too many SQL variables."
+                )
+            else:
+                detail = f"Search failed ({type(exc).__name__})."
+            raise HTTPException(status_code=500, detail=detail) from exc
 
     return app
