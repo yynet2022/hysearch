@@ -4,9 +4,11 @@ import importlib
 import json
 import os
 import runpy
+import sqlite3
 import subprocess
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from typer.testing import CliRunner
@@ -714,3 +716,75 @@ def test_main_module_import() -> None:
     import hysearch.__main__
 
     importlib.reload(hysearch.__main__)
+
+
+def test_cli_error_handling_and_exit_with_error(tmp_path: Path) -> None:
+    """Verify CLI commands gracefully handle database and OS errors."""
+    db_file = tmp_path / "err_test.db"
+    db_file.touch()
+
+    # 1. status command error
+    with patch(
+        "hysearch.cli.main.get_db_status",
+        side_effect=sqlite3.DatabaseError("database disk image is malformed"),
+    ):
+        res_status = runner.invoke(app, ["status", "--db", str(db_file)])
+    assert res_status.exit_code == 1
+    assert "database disk image is malformed" in res_status.stdout
+
+    # 2. reset command error
+    with patch.object(
+        Path, "unlink", side_effect=PermissionError("Access denied")
+    ):
+        res_reset = runner.invoke(app, ["reset", "-y", "--db", str(db_file)])
+    assert res_reset.exit_code == 1
+    assert "Access denied" in res_reset.stdout
+
+    # 3. prune command error
+    with patch(
+        "hysearch.cli.main.prune_missing_files",
+        side_effect=sqlite3.OperationalError("disk I/O error"),
+    ):
+        res_prune = runner.invoke(app, ["prune", "--db", str(db_file)])
+    assert res_prune.exit_code == 1
+    assert "disk I/O error" in res_prune.stdout
+
+    # 4. index command error (e.g. database locked)
+    docs_dir = tmp_path / "err_docs"
+    docs_dir.mkdir()
+    with patch(
+        "hysearch.cli.main.index_directory",
+        side_effect=sqlite3.OperationalError("database is locked"),
+    ):
+        res_index = runner.invoke(
+            app, ["index", str(docs_dir), "--db", str(db_file)]
+        )
+    assert res_index.exit_code == 1
+    assert "database is locked" in res_index.stdout
+
+    # 5. query command error (e.g. database locked)
+    with patch(
+        "hysearch.cli.main.search",
+        side_effect=sqlite3.OperationalError("database is locked"),
+    ):
+        res_query = runner.invoke(app, ["query", "test", "--db", str(db_file)])
+    assert res_query.exit_code == 1
+    assert "database is locked" in res_query.stdout
+
+    # 6. server command error (e.g. socket OSError)
+    with patch(
+        "hysearch.cli.main.run_server",
+        side_effect=OSError("Address already in use"),
+    ):
+        res_server = runner.invoke(app, ["server", "--db", str(db_file)])
+    assert res_server.exit_code == 1
+    assert "Address already in use" in res_server.stdout
+
+    # 7. mcp command error (e.g. sqlite3.OperationalError)
+    with patch(
+        "hysearch.cli.main.run_mcp_server",
+        side_effect=sqlite3.OperationalError("database is locked"),
+    ):
+        res_mcp = runner.invoke(app, ["mcp", "--db", str(db_file)])
+    assert res_mcp.exit_code == 1
+    assert "database is locked" in (res_mcp.stdout + res_mcp.stderr)

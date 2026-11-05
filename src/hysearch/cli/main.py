@@ -5,6 +5,7 @@ running hybrid queries, viewing index status, and resetting the database.
 """
 
 import json
+import sqlite3
 from pathlib import Path
 from typing import Annotated
 
@@ -53,6 +54,20 @@ app = typer.Typer(
     help="Fast, zero-daemon local hybrid search engine powered by SQLite.",
     no_args_is_help=True,
 )
+
+
+def exit_with_error(exc: Exception, prefix: str = "Error") -> None:
+    """Print formatted error message to console and exit with code 1.
+
+    Args:
+        exc: Exception instance that caused the failure.
+        prefix: Prefix label displayed before the error message.
+
+    Raises:
+        typer.Exit: Always raised with exit code 1.
+    """
+    console.print(f"[red]{prefix}:[/] {exc}")
+    raise typer.Exit(code=1) from exc
 
 
 def parse_extension_filters(
@@ -197,8 +212,7 @@ def index_cmd(
         try:
             resolved_req = resolve_tokenizer(tokenizer)
         except (ValueError, RuntimeError) as exc:
-            console.print(f"[red]Error:[/] {exc}")
-            raise typer.Exit(code=1) from exc
+            exit_with_error(exc)
     else:
         resolved_req = None
 
@@ -206,8 +220,7 @@ def index_cmd(
         try:
             resolved_model, resolved_dim = resolve_embed_model(model)
         except ValueError as exc:
-            console.print(f"[red]Error:[/] {exc}")
-            raise typer.Exit(code=1) from exc
+            exit_with_error(exc)
     else:
         resolved_model = None
         resolved_dim = None
@@ -218,10 +231,10 @@ def index_cmd(
         ":memory:" if (dry_run and not db.exists()) else db
     )
 
-    with get_connection(conn_target, read_only=dry_run) as conn:
-        stored_tok = get_stored_tokenizer(conn)
-        stored_model = get_stored_embed_model(conn)
-        try:
+    try:
+        with get_connection(conn_target, read_only=dry_run) as conn:
+            stored_tok = get_stored_tokenizer(conn)
+            stored_model = get_stored_embed_model(conn)
             target_tok = (
                 resolved_req
                 if resolved_req is not None
@@ -241,47 +254,8 @@ def index_cmd(
                     embed_model=target_model,
                     force_reinit_vec=force,
                 )
-        except (ValueError, RuntimeError) as exc:
-            console.print(f"[red]Error:[/] {exc}")
-            raise typer.Exit(code=1) from exc
 
-        if dry_run:
-            stats = index_directory(
-                conn=conn,
-                target_dir=dir_path,
-                chunk_size=chunk_size,
-                overlap=overlap,
-                force=force,
-                extensions=parsed_exts,
-                exclude_dirs=parsed_excludes,
-                dry_run=True,
-                tokenizer=target_tok,
-                embed_model=target_model,
-                embed_dim=target_dim,
-                on_file=print_dry_run_file,
-            )
-        else:
-            with Progress(
-                SpinnerColumn(),
-                TextColumn("[bold cyan]{task.description}[/]"),
-                BarColumn(),
-                MofNCompleteColumn(),
-                TimeElapsedColumn(),
-                console=console,
-                transient=True,
-            ) as progress:
-                task_id = progress.add_task("Scanning files...", total=None)
-
-                def on_progress(
-                    current: int, total: int, file_path: Path
-                ) -> None:
-                    progress.update(
-                        task_id,
-                        total=total,
-                        completed=current,
-                        description=f"[{current}/{total}] {file_path.name}",
-                    )
-
+            if dry_run:
                 stats = index_directory(
                     conn=conn,
                     target_dir=dir_path,
@@ -290,8 +264,50 @@ def index_cmd(
                     force=force,
                     extensions=parsed_exts,
                     exclude_dirs=parsed_excludes,
-                    on_progress=on_progress,
+                    dry_run=True,
+                    tokenizer=target_tok,
+                    embed_model=target_model,
+                    embed_dim=target_dim,
+                    on_file=print_dry_run_file,
                 )
+            else:
+                with Progress(
+                    SpinnerColumn(),
+                    TextColumn("[bold cyan]{task.description}[/]"),
+                    BarColumn(),
+                    MofNCompleteColumn(),
+                    TimeElapsedColumn(),
+                    console=console,
+                    transient=True,
+                ) as progress:
+                    task_id = progress.add_task(
+                        "Scanning files...", total=None
+                    )
+
+                    def on_progress(
+                        current: int, total: int, file_path: Path
+                    ) -> None:
+                        progress.update(
+                            task_id,
+                            total=total,
+                            completed=current,
+                            description=(
+                                f"[{current}/{total}] {file_path.name}"
+                            ),
+                        )
+
+                    stats = index_directory(
+                        conn=conn,
+                        target_dir=dir_path,
+                        chunk_size=chunk_size,
+                        overlap=overlap,
+                        force=force,
+                        extensions=parsed_exts,
+                        exclude_dirs=parsed_excludes,
+                        on_progress=on_progress,
+                    )
+    except (sqlite3.Error, OSError, ValueError, RuntimeError) as exc:
+        exit_with_error(exc)
     print_indexing_stats(stats, dry_run=dry_run)
 
 
@@ -383,8 +399,7 @@ def query_cmd(
             before=before,
         )
     except ValueError as exc:
-        console.print(f"[red]Error:[/] {exc}")
-        raise typer.Exit(code=1) from exc
+        exit_with_error(exc)
 
     if not db.exists():
         console.print(
@@ -393,8 +408,8 @@ def query_cmd(
         )
         raise typer.Exit(code=1)
 
-    with get_connection(db, read_only=True) as conn:
-        try:
+    try:
+        with get_connection(db, read_only=True) as conn:
             response = search(
                 conn=conn,
                 query=query_str,
@@ -406,9 +421,8 @@ def query_cmd(
                 since=since_dt,
                 until=until_dt,
             )
-        except (ValueError, RuntimeError) as exc:
-            console.print(f"[red]Error:[/] {exc}")
-            raise typer.Exit(code=1) from exc
+    except (sqlite3.Error, OSError, ValueError, RuntimeError) as exc:
+        exit_with_error(exc)
 
     if output_json:
         typer.echo(response.model_dump_json(indent=2))
@@ -441,7 +455,10 @@ def status_cmd(
             console.print(f"[yellow]Database '{db}' does not exist.[/]")
         return
 
-    status_data = get_db_status(db)
+    try:
+        status_data = get_db_status(db)
+    except (sqlite3.Error, OSError, ValueError, RuntimeError) as exc:
+        exit_with_error(exc)
 
     if output_json:
         typer.echo(json.dumps(status_data, indent=2))
@@ -473,12 +490,15 @@ def reset_cmd(
             console.print("[dim]Aborted reset.[/]")
             raise typer.Abort()
 
-    db.unlink(missing_ok=True)
-    # WAL / SHM ファイル等もクリーンアップ
-    for suffix in ("-wal", "-shm", "-journal"):
-        extra = db.with_name(db.name + suffix)
-        if extra.exists():
-            extra.unlink(missing_ok=True)
+    try:
+        db.unlink(missing_ok=True)
+        # WAL / SHM ファイル等もクリーンアップ
+        for suffix in ("-wal", "-shm", "-journal"):
+            extra = db.with_name(db.name + suffix)
+            if extra.exists():
+                extra.unlink(missing_ok=True)
+    except OSError as exc:
+        exit_with_error(exc)
 
     console.print(f"[green]Successfully deleted database:[/] {db}")
 
@@ -514,14 +534,17 @@ def prune_cmd(
         if not output_json:
             print_pruned_file(file_path, dry_run=is_dry_run)
 
-    with get_connection(db, read_only=dry_run) as conn:
-        if not dry_run:
-            init_db(conn)
-        total_checked, pruned_files = prune_missing_files(
-            conn=conn,
-            dry_run=dry_run,
-            on_missing=on_missing,
-        )
+    try:
+        with get_connection(db, read_only=dry_run) as conn:
+            if not dry_run:
+                init_db(conn)
+            total_checked, pruned_files = prune_missing_files(
+                conn=conn,
+                dry_run=dry_run,
+                on_missing=on_missing,
+            )
+    except (sqlite3.Error, OSError, ValueError, RuntimeError) as exc:
+        exit_with_error(exc)
 
     if output_json:
         result = {
@@ -586,9 +609,8 @@ def server_cmd(
             port=port,
             open_browser=open_browser,
         )
-    except (ValueError, RuntimeError) as exc:
-        console.print(f"[red]Error:[/] {exc}")
-        raise typer.Exit(code=1) from exc
+    except (sqlite3.Error, OSError, ValueError, RuntimeError) as exc:
+        exit_with_error(exc)
 
 
 @app.command(name="mcp")
@@ -609,6 +631,6 @@ def mcp_cmd(
 
     try:
         run_mcp_server(db_path=db)
-    except (FileNotFoundError, ValueError, RuntimeError) as exc:
+    except (sqlite3.Error, OSError, ValueError, RuntimeError) as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(code=1) from exc
