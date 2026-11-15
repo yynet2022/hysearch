@@ -340,7 +340,16 @@ def test_sqlite_diagnostics_and_limits(
     )
     assert dummy_diag["variable_limit"] is None
 
-    # 3. get_db_status で variable_limit が存在する場合の出力確認
+    # 3. conn.getlimit が存在しない環境 (旧 Python / 一部ビルド) の分岐も検証
+    class NoLimitConn:
+        pass
+
+    no_limit_diag = get_sqlite_diagnostics(
+        NoLimitConn()  # type: ignore[arg-type]
+    )
+    assert no_limit_diag["variable_limit"] is None
+
+    # 4. get_db_status で variable_limit が存在する場合と None の場合の出力確認
     db_file = tmp_path / "status_diag.db"
     with get_connection(db_file) as conn:
         init_db(conn)
@@ -356,6 +365,18 @@ def test_sqlite_diagnostics_and_limits(
         status = get_db_status(db_file)
         assert status["SQL Variable Limit"] == 32766
         assert status["SQLite Version"] == "3.45.0"
+
+    with monkeypatch.context() as m:
+        m.setattr(
+            "hysearch.core.database.get_sqlite_diagnostics",
+            lambda conn: {
+                "sqlite_version": "3.45.0",
+                "variable_limit": None,
+                "supports_trigram": True,
+            },
+        )
+        status_no_limit = get_db_status(db_file)
+        assert "SQL Variable Limit" not in status_no_limit
 
 
 def test_init_db_old_sqlite_trigram_error(
